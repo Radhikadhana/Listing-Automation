@@ -2,8 +2,8 @@
 Logic module for Product Feed Generator / Zecom Tracker processing.
 - Handles missing/empty Graas SKU gracefully.
 - Sets Parent Row variation1 = "color_family" and variation2 = "size".
-- Sets Variant Row variation1 = Color Name (Col 9) and variation2 = Size UK (Col 22).
-- Populates total variation count in noOfVariants (Col 9 in output).
+- Sets Variant Row variation1 = Color Name (Col 14) and variation2 = Size UK (Col 15).
+- Populates total variation count in noOfVariants (Col 13 in output).
 - Sorts child variants sequentially by size order (Alpha/Numeric).
 - Maps formatted details into templateAttributes (descriptions/care/sizecharts).
 """
@@ -377,8 +377,8 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         for r_idx in sorted_row_indices:
             custom_sku = s(val(input_ws, r_idx, 16)).strip()                   # customSKU
             variant_rrp = val(input_ws, r_idx, price_col_idx)                  # RRP from Tracker
-            color_name = val(input_ws, r_idx, 9)                              # variation1 = Color Name (Col 9)
-            size_uk_val = get_variation2_size(input_ws, r_idx)                # variation2 = Size UK (Col 22)
+            color_name = val(input_ws, r_idx, 9)                              # variation1 = Color Name (Col 14)
+            size_uk_val = get_variation2_size(input_ws, r_idx)                # variation2 = Size UK (Col 15)
 
             amt_val = amount_map.get(custom_sku) if custom_sku else None
             if variant_rrp == "" and amt_val:
