@@ -4,7 +4,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from logic import build_output_workbook
+from logic import build_output_workbook, ConversionError
 from github_utils import get_file, put_file, GitHubError
 
 st.set_page_config(page_title="Product Feed Generator", layout="centered")
@@ -69,7 +69,24 @@ if input_bytes:
 
 st.subheader("2. Generate the Output sheet")
 
-if input_bytes and st.button("Run conversion", type="primary"):
+if input_bytes:
+    with st.expander("Diagnostics: what's in this file", expanded=False):
+        try:
+            from openpyxl import load_workbook
+            import io as _io
+            _wb = load_workbook(_io.BytesIO(input_bytes), data_only=True)
+            st.write("Sheets found:", _wb.sheetnames)
+            for _name in _wb.sheetnames:
+                _ws = _wb[_name]
+                st.write(f"- **{_name}**: {_ws.max_row} rows x {_ws.max_column} cols")
+        except Exception as _e:
+            st.warning(f"Could not inspect the file: {_e}")
+
+run_clicked = st.button("Run conversion", type="primary", disabled=not input_bytes)
+if not input_bytes:
+    st.caption("Upload or fetch an input workbook above first.")
+
+if run_clicked and input_bytes:
     progress_bar = st.progress(0.0, text="Starting...")
 
     def progress_callback(done, total):
@@ -85,7 +102,11 @@ if input_bytes and st.button("Run conversion", type="primary"):
         progress_bar.progress(1.0, text="Done")
         st.session_state["output_bytes"] = output_bytes
         st.success("Conversion complete.")
+    except ConversionError as e:
+        progress_bar.empty()
+        st.error(str(e))
     except Exception as e:
+        progress_bar.empty()
         st.error(f"Conversion failed: {e}")
         st.code(traceback.format_exc())
 
