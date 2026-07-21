@@ -1,8 +1,11 @@
 """
 Logic module for Product Feed Generator / Zecom Tracker processing.
+Supports dynamic price column selection, currency code settings, and
+division-based parent SKU mapping (Apparel/Accessories -> Style; Footwear -> Color No.).
 """
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils import column_index_from_string
 import io
 
 
@@ -56,6 +59,33 @@ def is_not_number(v):
         return False
     except (ValueError, TypeError):
         return True
+
+
+def parse_column_setting(ws, col_setting):
+    """Parse column setting (letter like 'D' or '1' or header name) to 1-based index."""
+    if not col_setting:
+        return 4  # Default column D
+
+    col_setting_str = str(col_setting).strip()
+
+    # Try column letter (e.g. 'D', 'AA')
+    if col_setting_str.isalpha():
+        try:
+            return column_index_from_string(col_setting_str.upper())
+        except ValueError:
+            pass
+
+    # Try column integer index
+    if col_setting_str.isdigit():
+        return int(col_setting_str)
+
+    # Search header row (Row 1) for matching column name
+    for c in range(1, ws.max_column + 1):
+        header_val = str(val(ws, 1, c)).strip().lower()
+        if header_val == col_setting_str.lower():
+            return c
+
+    return 4  # Fallback to column D
 
 
 class OutputSheet:
@@ -146,40 +176,6 @@ def get_item_title(regional_display_name, brand, gender, activity_group, article
     return remove_duplicates(title)
 
 
-def variation2(input_ws, i):
-    product_division = val(input_ws, i, 14)
-    size_uk, size_fr, size_asia, size_us = val(input_ws, i, 22), val(input_ws, i, 21), val(input_ws, i, 23), val(input_ws, i, 20)
-    variation = None
-
-    if product_division in ("Footwear", "Accessories", "Socks"):
-        if size_uk != "":
-            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
-        else:
-            variation = ("Int:" + s(size_fr)) if is_not_number(size_fr) else ("US:" + s(size_fr))
-    elif product_division == "Apparel":
-        if size_uk != "":
-            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
-        elif size_us != "":
-            variation = ("Int:" + s(size_us)) if is_not_number(size_us) else ("US:" + s(size_us))
-        else:
-            variation = ("Int:" + s(size_asia)) if is_not_number(size_asia) else ("ASIA:" + s(size_asia))
-
-    if variation is None:
-        return ""
-
-    if "/" in variation:
-        if any(k in variation for k in ("S/M", "M/L", "L/XL")):
-            return variation
-        return replace_first(replace_first(variation, "Int:", "Int:W"), "/", " L")
-    
-    tags = {"OSFA": "Int:One size", "Mini": "Int:XS", "Kids": "Int:S", "Youth": "Int:M", "Adult": "Int:L", "UA": "Int:UA"}
-    for tag, replacement in tags.items():
-        if tag in variation:
-            return replacement
-
-    return variation if "Youth" in variation else replace_first(variation, "Y", " yrs")
-
-
 def construct_amount_map(price_ws):
     amount_map = {}
     for r in range(2, price_ws.max_row + 1):
@@ -210,13 +206,28 @@ def get_template_attribute1(size_chart_ws):
     return size_chart_map
 
 
+def get_parent_sku(input_ws, row_idx, products_division):
+    """
+    Parent SKU Rules:
+    - Apparel and Accessories: Use Style (Col 1)
+    - Footwear: Use Color No. (Col 9)
+    """
+    if products_division in ["Apparel", "Accessories"]:
+        return val(input_ws, row_idx, 1)  # Style column
+    elif products_division == "Footwear":
+        return val(input_ws, row_idx, 9)  # Color No. column
+    else:
+        # Default fallback to Style (Col 1) if not specified
+        return val(input_ws, row_idx, 1)
+
+
 def count_no_of_items(input_ws):
     result = {}
     for i in range(2, input_ws.max_row + 1):
         products = val(input_ws, i, 14)
-        key = val(input_ws, i, 9) if products == "Footwear" else val(input_ws, i, 1)
-        if key:
-            result[key] = result.get(key, 0) + 1
+        parent_sku = get_parent_sku(input_ws, i, products)
+        if parent_sku:
+            result[parent_sku] = result.get(parent_sku, 0) + 1
     return result
 
 
@@ -237,11 +248,15 @@ def find_sheet(wb, expected_name, required=True):
 
 
 def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None,
-                   keep_debug_writes=False, progress_callback=None, custom_headings=None):
+                   currency_code="PHP", price_col_setting="D", keep_debug_writes=False,
+                   progress_callback=None, custom_headings=None):
     amount_map = construct_amount_map(price_ws)
     category_map = construct_category_map(category_ws)
     style_count_map = count_no_of_items(input_ws)
     size_chart_map = get_template_attribute1(size_chart_ws)
+
+    # Parse tracker price column (defaults to Col D if invalid)
+    price_col_idx = parse_column_setting(input_ws, price_col_setting)
 
     main = OutputSheet()
     index = 2
@@ -254,7 +269,7 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         if i == 2:
             create_heading_for_target_sheet(main, custom_headings)
 
-        products = val(input_ws, i, 14)
+        products_division = val(input_ws, i, 14)
         custom_sku = val(input_ws, i, 16)
         brand = val(input_ws, i, 3)
         regional_display_name = val(input_ws, i, 2)
@@ -265,25 +280,46 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         age_group = val(input_ws, i, 4)
         article_group = val(input_ws, i, 6)
 
-        item_title = get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products)
-        main.set_value(index, 4, custom_sku)
+        # Apply Parent SKU logic
+        parent_sku = get_parent_sku(input_ws, i, products_division)
+
+        # Set Parent SKU into customSKU / Parent Column (Col 4)
+        main.set_value(index, 4, parent_sku if parent_sku else custom_sku)
+
+        # Set Item Title
+        item_title = get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division)
         main.set_value(index, 5, replace_spl_character(item_title))
 
-        amount_map_value = amount_map.get(custom_sku)
-        if amount_map_value:
-            main.set_value(index, 17, amount_map_value[3])  # Col D
-            if len(amount_map_value) > 4:
-                main.set_value(index, 14, amount_map_value[4])  # Col E
+        # 1. Price / RRP Mapping: Read from selected Tracker Price Column
+        tracker_price = val(input_ws, i, price_col_idx)
+        if tracker_price != "":
+            # Set RRP into itemAmount (Col 17)
+            main.set_value(index, 17, tracker_price)
+        else:
+            # Fallback to Price Sheet itemAmount (Col D)
+            amount_map_value = amount_map.get(custom_sku)
+            if amount_map_value:
+                main.set_value(index, 17, amount_map_value[3])
 
+        # Sale Price mapping from Price Sheet if available
+        amount_map_value = amount_map.get(custom_sku)
+        if amount_map_value and len(amount_map_value) > 4:
+            main.set_value(index, 14, amount_map_value[4])  # Col E (salePrice)
+
+        # 2. Currency Code Setting (Col 18)
+        main.set_value(index, 18, currency_code)
+
+        # Category mapping
         mapped_key = f"{age_group}-{gender}-{article_group}-{article_type}-{activity_group}"
         cat_val = category_map.get(mapped_key)
         if cat_val and len(cat_val) > 1:
             main.set_value(index, 21, cat_val[1])  # Col B
 
+        # Size Chart mapping
         size_chart_key = f"{age_group}-{gender}-{article_group}-{article_type}"
         size_chart_val = size_chart_map.get(size_chart_key)
         if size_chart_val and len(size_chart_val) > 1:
-            main.set_value(index, 56, "sizechart=" + s(size_chart_val[1]))  # Col B
+            main.set_value(index, 56, "sizechart=" + s(size_chart_val[1]))
 
         index += 1
 
@@ -292,6 +328,7 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
 
 def build_output_workbook(input_bytes, price_bytes=None, category_bytes=None,
                           size_chart_bytes=None, sample_output_bytes=None,
+                          currency_code="PHP", price_col_setting="D",
                           keep_debug_writes=False, progress_callback=None):
     try:
         wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
@@ -326,8 +363,11 @@ def build_output_workbook(input_bytes, price_bytes=None, category_bytes=None,
 
     output = run_conversion(
         input_ws, price_ws, category_ws, size_chart_ws,
-        stock_ws=stock_ws, keep_debug_writes=keep_debug_writes,
-        progress_callback=progress_callback, custom_headings=custom_headings
+        stock_ws=stock_ws, currency_code=currency_code,
+        price_col_setting=price_col_setting,
+        keep_debug_writes=keep_debug_writes,
+        progress_callback=progress_callback,
+        custom_headings=custom_headings
     )
 
     out_wb = output.to_workbook()
