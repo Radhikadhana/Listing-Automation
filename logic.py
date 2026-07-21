@@ -815,31 +815,97 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
     return main
 
 
+class ConversionError(Exception):
+    """Raised for problems that would otherwise silently produce an empty or
+    near-empty Output sheet, so the UI can show a clear message instead of
+    just 'nothing happened'."""
+
+
+def _normalize_sheet_name(name):
+    return "".join(name.split()).lower()
+
+
+def find_sheet(wb, expected_name, required=True):
+    """Look up a worksheet by name, tolerating case and stray whitespace
+    differences (a very common cause of 'required sheet not found')."""
+    if expected_name in wb.sheetnames:
+        return wb[expected_name]
+    target = _normalize_sheet_name(expected_name)
+    for name in wb.sheetnames:
+        if _normalize_sheet_name(name) == target:
+            return wb[name]
+    if required:
+        raise ConversionError(
+            f"Could not find a sheet named '{expected_name}' (case/whitespace "
+            f"insensitive match also failed). Sheets present in the uploaded "
+            f"file: {wb.sheetnames}"
+        )
+    return None
+
+
+def _sheet_has_any_values(ws, max_check_rows=5):
+    """Quick check: does this worksheet have any non-empty cells at all in its
+    first few data rows? Used to catch the common case where a workbook was
+    saved with live formulas and no cached results, so data_only=True reads
+    come back as all-None."""
+    if ws is None:
+        return True
+    last_row = min(ws.max_row, max_check_rows + 1)
+    for r in range(2, last_row + 1):
+        for c in range(1, min(ws.max_column, 40) + 1):
+            if ws.cell(row=r, column=c).value not in (None, ""):
+                return True
+    return ws.max_row <= 1  # genuinely empty sheet (no data rows) isn't itself an error here
+
+
 def build_output_workbook(input_bytes, keep_debug_writes=False, progress_callback=None):
     """Load an xlsx (as bytes) containing Input / Price Sheet / Category sheet /
     Size chart (and optionally Stock sheet) worksheets, run the conversion,
     and return an in-memory xlsx workbook (bytes) with the Output sheet."""
-    wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
+    try:
+        wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
+    except Exception as e:
+        raise ConversionError(
+            f"Could not open the uploaded file as an .xlsx workbook: {e}. "
+            f"Make sure it's a real Excel file (not .xls, .csv, or a Google "
+            f"Sheets export link) and hasn't been corrupted."
+        )
 
-    def get_sheet(name, required=True):
-        if name in wb.sheetnames:
-            return wb[name]
-        if required:
-            raise ValueError(
-                f"Required sheet '{name}' not found in workbook. "
-                f"Sheets present: {wb.sheetnames}"
-            )
-        return None
+    input_ws = find_sheet(wb, "Input")
+    price_ws = find_sheet(wb, "Price Sheet")
+    category_ws = find_sheet(wb, "Category sheet")
+    size_chart_ws = find_sheet(wb, "Size chart")
+    stock_ws = find_sheet(wb, "Stock sheet", required=False)
 
-    input_ws = get_sheet("Input")
-    price_ws = get_sheet("Price Sheet")
-    category_ws = get_sheet("Category sheet")
-    size_chart_ws = get_sheet("Size chart")
-    stock_ws = get_sheet("Stock sheet", required=False)
+    if input_ws.max_row < 2:
+        raise ConversionError(
+            "The 'Input' sheet has no data rows below the header (row 1). "
+            "Nothing to convert."
+        )
+
+    if not _sheet_has_any_values(input_ws):
+        raise ConversionError(
+            "The 'Input' sheet's data rows all read as empty. This usually "
+            "means the workbook stores live formulas without cached values "
+            "(common when a file is exported from Google Sheets with "
+            "'File > Download' right after edits, or opened/re-saved by a "
+            "tool that strips cached formula results). Try opening the file "
+            "in Excel and re-saving it, or in Google Sheets doing "
+            "File > Download > Microsoft Excel (.xlsx), then re-upload."
+        )
 
     output = run_conversion(input_ws, price_ws, category_ws, size_chart_ws,
                              stock_ws=stock_ws, keep_debug_writes=keep_debug_writes,
                              progress_callback=progress_callback)
+
+    if output.max_row < 2:
+        raise ConversionError(
+            "The conversion ran but produced zero output rows. This usually "
+            "means the 'products division' column (column N / 14 in 'Input') "
+            "doesn't contain any of the expected values "
+            "('Footwear', 'Apparel', 'Accessories', 'Socks') for any row, or "
+            "the style columns (A or I) are empty for every row."
+        )
 
     out_wb = output.to_workbook()
     buf = io.BytesIO()
