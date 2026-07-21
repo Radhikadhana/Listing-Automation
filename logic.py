@@ -1,8 +1,11 @@
 """
 Logic module for Product Feed Generator / Zecom Tracker processing.
-- Generates Parent rows followed by Variant rows.
+- Inserts Parent rows followed by Variant rows.
 - Dynamic tracker price selection for RRP.
-- Dynamic currency code selection.
+- Dynamic currency code selection (PHP, SGD, MYR).
+- Maps Color Name -> variation1.
+- Maps Size UK -> variation2.
+- Maps Size Chart -> templateAttribute1 (sizechart=...).
 """
 
 from openpyxl import Workbook, load_workbook
@@ -45,6 +48,14 @@ def s(v):
 
 def replace_first(text, old, new):
     return s(text).replace(old, new, 1)
+
+
+def is_not_number(v):
+    try:
+        float(s(v).strip())
+        return False
+    except (ValueError, TypeError):
+        return True
 
 
 def parse_column_setting(ws, col_setting):
@@ -146,13 +157,44 @@ def form_title(brand, new_regional_display_name, activity_group, article_type, g
 def get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division):
     regional_display_name, search_color_name = s(regional_display_name), s(search_color_name)
     new_regional_display_name = replace_first(regional_display_name, "\u2019s", "'s\u2122") if "\u2019s" in regional_display_name else regional_display_name
-    get_search_color_name = search_color_name.split(" - ")[1] if " - " in search_color_name else ""
+    get_search_color_name = search_color_name.split(" - ")[1] if " - " in search_color_name else search_color_name
 
     if "Men" in regional_display_name or "Women" in regional_display_name:
         title = form_title(brand, new_regional_display_name, activity_group, article_type, "", get_search_color_name, products_division)
     else:
         title = form_title(brand, new_regional_display_name, activity_group, article_type, gender, get_search_color_name, products_division)
     return remove_duplicates(title)
+
+
+def get_variation2_size(input_ws, i):
+    """
+    Extracts Size UK (Col 22) or calculates formatted variation string.
+    """
+    product_division = val(input_ws, i, 14)
+    size_uk = val(input_ws, i, 22)
+    size_fr = val(input_ws, i, 21)
+    size_asia = val(input_ws, i, 23)
+    size_us = val(input_ws, i, 20)
+
+    # Primary check for direct Size UK
+    if size_uk != "":
+        return s(size_uk)
+
+    variation = None
+    if product_division in ("Footwear", "Accessories", "Socks"):
+        if size_uk != "":
+            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
+        else:
+            variation = ("Int:" + s(size_fr)) if is_not_number(size_fr) else ("US:" + s(size_fr))
+    elif product_division == "Apparel":
+        if size_uk != "":
+            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
+        elif size_us != "":
+            variation = ("Int:" + s(size_us)) if is_not_number(size_us) else ("US:" + s(size_us))
+        else:
+            variation = ("Int:" + s(size_asia)) if is_not_number(size_asia) else ("ASIA:" + s(size_asia))
+
+    return s(variation) if variation else ""
 
 
 def construct_amount_map(price_ws):
@@ -256,26 +298,28 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         cat_val = category_map.get(mapped_key)
         cat_id = cat_val[1] if (cat_val and len(cat_val) > 1) else ""
 
+        # Build Size Chart mapping based on Title attributes
         size_chart_key = f"{age_group}-{gender}-{article_group}-{article_type}"
         size_chart_val = size_chart_map.get(size_chart_key)
         size_chart_attr = ("sizechart=" + s(size_chart_val[1])) if (size_chart_val and len(size_chart_val) > 1) else ""
 
-        # Get parent price from tracker
+        # Get parent RRP price from tracker
         parent_rrp = val(input_ws, first_idx, price_col_idx)
 
         # -------------------------------------------------------------------
         # 1. INSERT PARENT ROW
         # -------------------------------------------------------------------
-        main.set_value(current_out_row, 1, parent_id)                      # SKU / Parent ID
-        main.set_value(current_out_row, 4, parent_id)                      # Seller SKU
-        main.set_value(current_out_row, 5, replace_spl_character(item_title)) # Item Title
-        main.set_value(current_out_row, 9, len(row_indices))               # noOfVariants
-        main.set_value(current_out_row, 17, parent_rrp)                    # RRP / itemAmount
-        main.set_value(current_out_row, 18, currency_code)                 # Currency Code
-        main.set_value(current_out_row, 21, cat_id)                        # Category ID
-        main.set_value(current_out_row, 23, brand)                         # Brand
+        main.set_value(current_out_row, 1, parent_id)                         # SKU / Parent ID
+        main.set_value(current_out_row, 4, parent_id)                         # Seller SKU
+        main.set_value(current_out_row, 5, replace_spl_character(item_title))    # Item Title
+        main.set_value(current_out_row, 9, len(row_indices))                  # noOfVariants
+        main.set_value(current_out_row, 10, search_color_name)                # variation1 (Color)
+        main.set_value(current_out_row, 17, parent_rrp)                       # RRP / itemAmount
+        main.set_value(current_out_row, 18, currency_code)                    # Currency Code
+        main.set_value(current_out_row, 21, cat_id)                           # Category ID
+        main.set_value(current_out_row, 23, brand)                            # Brand
         if size_chart_attr:
-            main.set_value(current_out_row, 56, size_chart_attr)           # Template Attribute 1
+            main.set_value(current_out_row, 56, size_chart_attr)              # templateAttribute1 (Size Chart)
         
         current_out_row += 1
 
@@ -283,8 +327,10 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         # 2. INSERT VARIANT ROWS
         # -------------------------------------------------------------------
         for r_idx in row_indices:
-            custom_sku = val(input_ws, r_idx, 16)                          # Seller SKU
-            variant_rrp = val(input_ws, r_idx, price_col_idx)               # RRP from Tracker
+            custom_sku = val(input_ws, r_idx, 16)                             # Seller SKU
+            variant_rrp = val(input_ws, r_idx, price_col_idx)                  # RRP from Tracker
+            color_name = val(input_ws, r_idx, 13)                             # Color Name (Col 13)
+            size_uk_val = get_variation2_size(input_ws, r_idx)                # Size UK (Col 22)
             
             if variant_rrp == "":
                 amt_val = amount_map.get(custom_sku)
@@ -294,16 +340,18 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
             amt_val = amount_map.get(custom_sku)
             sale_price = amt_val[4] if (amt_val and len(amt_val) > 4) else ""
 
-            main.set_value(current_out_row, 1, parent_id)                  # Parent SKU Reference
-            main.set_value(current_out_row, 4, custom_sku)                 # Seller SKU (customSKU)
+            main.set_value(current_out_row, 1, parent_id)                     # Parent SKU Reference
+            main.set_value(current_out_row, 4, custom_sku)                    # Seller SKU (customSKU)
             main.set_value(current_out_row, 5, replace_spl_character(item_title))
-            main.set_value(current_out_row, 14, sale_price)                # Sale Price
-            main.set_value(current_out_row, 17, variant_rrp)               # RRP / itemAmount
-            main.set_value(current_out_row, 18, currency_code)             # Currency Code
-            main.set_value(current_out_row, 21, cat_id)                    # Category ID
-            main.set_value(current_out_row, 23, brand)                     # Brand
+            main.set_value(current_out_row, 10, color_name)                   # variation1 = Color Name
+            main.set_value(current_out_row, 11, size_uk_val)                  # variation2 = Size UK
+            main.set_value(current_out_row, 14, sale_price)                   # Sale Price
+            main.set_value(current_out_row, 17, variant_rrp)                  # RRP / itemAmount
+            main.set_value(current_out_row, 18, currency_code)                # Currency Code
+            main.set_value(current_out_row, 21, cat_id)                       # Category ID
+            main.set_value(current_out_row, 23, brand)                        # Brand
             if size_chart_attr:
-                main.set_value(current_out_row, 56, size_chart_attr)
+                main.set_value(current_out_row, 56, size_chart_attr)         # templateAttribute1 (Size Chart)
 
             current_out_row += 1
 
