@@ -3,7 +3,6 @@ import traceback
 from datetime import datetime
 
 import streamlit as st
-from openpyxl import load_workbook
 
 from logic import build_output_workbook, ConversionError
 from github_utils import get_file, put_file, GitHubError
@@ -89,10 +88,10 @@ with col2:
         help="Upload a sample sheet to dynamically derive the output columns/headers."
     )
 
-# Process standalone sheet bytes
+# Process standalone sheet bytes safely
 price_bytes = price_file.read() if price_file else None
 category_bytes = category_file.read() if category_file else None
-size_chart_bytes = size_chart_file.read() if size_file else None if 'size_file' in locals() else (size_chart_file.read() if size_chart_file else None)
+size_chart_bytes = size_chart_file.read() if size_chart_file else None
 sample_output_bytes = sample_output_file.read() if sample_output_file else None
 
 st.markdown("---")
@@ -130,7 +129,7 @@ if run_clicked and input_bytes:
         st.error(f"Conversion failed: {e}")
         st.code(traceback.format_exc())
 
-# Download / Push section
+# Download / Export section
 if "output_bytes" in st.session_state:
     st.subheader("4. Download or Export Output")
     out_bytes = st.session_state["output_bytes"]
