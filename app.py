@@ -3,21 +3,21 @@ import traceback
 from datetime import datetime
 
 import streamlit as st
+from openpyxl import load_workbook
 
 from logic import build_output_workbook, ConversionError
 from github_utils import get_file, put_file, GitHubError
 
 st.set_page_config(page_title="Product Feed Generator - Zecom Tracker", layout="wide")
 st.title("Product Feed Generator")
-st.caption("Generate ZECOM feed outputs using custom input sheets and uploaded mapping criteria.")
+st.caption("Generate ZECOM feed outputs with customized column selections, currency codes, and parent SKU rules.")
 
 # ---------------------------------------------------------------------------
-# Sidebar: GitHub connection settings
+# Sidebar: GitHub Connection Settings
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("GitHub Connection")
-    token = st.text_input("GitHub Token (PAT)", type="password",
-                           help="Needs 'repo' scope on target repo.")
+    token = st.text_input("GitHub Token (PAT)", type="password", help="Needs 'repo' scope on target repo.")
     owner = st.text_input("Repo Owner", placeholder="my-org")
     repo = st.text_input("Repo Name", placeholder="product-feed")
     branch = st.text_input("Branch", value="main")
@@ -59,47 +59,52 @@ else:
         input_label = st.session_state["gh_input_path"]
 
 st.markdown("---")
-st.subheader("2. Upload Specific Mapping Sheets (Optional / Override)")
-st.caption("You can upload standalone files for specific mapping sheets or let the system read them from the main workbook.")
+st.subheader("2. Configurable Tracker Options")
+
+col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+
+with col_cfg1:
+    currency_code = st.selectbox(
+        "Select Currency Code",
+        options=["PHP", "SGD", "MYR"],
+        index=0,
+        help="This value will fill the currencyCode column in the output sheet."
+    )
+
+with col_cfg2:
+    price_col_input = st.text_input(
+        "Tracker Price Column (for RRP)",
+        value="D",
+        help="Enter column letter (e.g., D, E, Q) or header name from the tracker that contains the price/RRP."
+    )
+
+with col_cfg3:
+    st.info("Parent SKU Rules:\n- **Apparel & Accessories**: Uses **Style**\n- **Footwear**: Uses **Color No.**")
+
+st.markdown("---")
+st.subheader("3. Upload Mapping Sheets (Optional / Override)")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    price_file = st.file_uploader(
-        "Price Sheet (.xlsx)", 
-        type=["xlsx"], 
-        help="Columns expected: Col C = customSKU, Col D = Item Amount, Col E = Sale Price"
-    )
-    category_file = st.file_uploader(
-        "Category Sheet (.xlsx)", 
-        type=["xlsx"], 
-        help="Columns expected: Col A = Lookup Key, Col B = Category ID"
-    )
+    price_file = st.file_uploader("Price Sheet (.xlsx)", type=["xlsx"])
+    category_file = st.file_uploader("Category Sheet (.xlsx)", type=["xlsx"])
 
 with col2:
-    size_chart_file = st.file_uploader(
-        "Size Chart Sheet (.xlsx)", 
-        type=["xlsx"], 
-        help="Columns expected: Col A = Lookup Key, Col B = Template Attribute/Value"
-    )
-    sample_output_file = st.file_uploader(
-        "Sample Output Template Sheet (.xlsx)", 
-        type=["xlsx"], 
-        help="Upload a sample sheet to dynamically derive the output columns/headers."
-    )
+    size_chart_file = st.file_uploader("Size Chart Sheet (.xlsx)", type=["xlsx"])
+    sample_output_file = st.file_uploader("Sample Output Template Sheet (.xlsx)", type=["xlsx"])
 
-# Process standalone sheet bytes safely
 price_bytes = price_file.read() if price_file else None
 category_bytes = category_file.read() if category_file else None
 size_chart_bytes = size_chart_file.read() if size_chart_file else None
 sample_output_bytes = sample_output_file.read() if sample_output_file else None
 
 st.markdown("---")
-st.subheader("3. Generate Output Sheet")
+st.subheader("4. Run Conversion")
 
 run_clicked = st.button("Run Conversion", type="primary", disabled=not input_bytes)
 if not input_bytes:
-    st.caption("Please provide an input workbook above to proceed.")
+    st.caption("Please upload or fetch an input workbook first.")
 
 if run_clicked and input_bytes:
     progress_bar = st.progress(0.0, text="Starting conversion...")
@@ -115,12 +120,14 @@ if run_clicked and input_bytes:
             category_bytes=category_bytes,
             size_chart_bytes=size_chart_bytes,
             sample_output_bytes=sample_output_bytes,
+            currency_code=currency_code,
+            price_col_setting=price_col_input,
             keep_debug_writes=keep_debug_writes,
             progress_callback=progress_callback,
         )
         progress_bar.progress(1.0, text="Done")
         st.session_state["output_bytes"] = output_bytes
-        st.success("Output sheet generated and populated successfully!")
+        st.success("Conversion complete! RRP and Parent SKUs mapped successfully.")
     except ConversionError as e:
         progress_bar.empty()
         st.error(str(e))
@@ -129,9 +136,9 @@ if run_clicked and input_bytes:
         st.error(f"Conversion failed: {e}")
         st.code(traceback.format_exc())
 
-# Download / Export section
+# Download / Push section
 if "output_bytes" in st.session_state:
-    st.subheader("4. Download or Export Output")
+    st.subheader("5. Download / Export Result")
     out_bytes = st.session_state["output_bytes"]
 
     default_name = f"zecom_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -142,7 +149,7 @@ if "output_bytes" in st.session_state:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    st.markdown("**Push directly to GitHub Repo**")
+    st.markdown("**Push to GitHub**")
     output_path = st.text_input("Path in repo for output file", placeholder="data/output.xlsx")
     commit_msg = st.text_input("Commit message", value="Update generated ZECOM product feed output")
 
