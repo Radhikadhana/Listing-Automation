@@ -1,7 +1,8 @@
 """
 Logic module for Product Feed Generator / Zecom Tracker processing.
-Supports dynamic price column selection, currency code settings, and
-division-based parent SKU mapping (Apparel/Accessories -> Style; Footwear -> Color No.).
+- Generates Parent rows followed by Variant rows.
+- Dynamic tracker price selection for RRP.
+- Dynamic currency code selection.
 """
 
 from openpyxl import Workbook, load_workbook
@@ -13,10 +14,6 @@ class ConversionError(Exception):
     """Raised for issues that prevent proper generation of the Output sheet."""
     pass
 
-
-# ---------------------------------------------------------------------------
-# Default Headings & Helpers
-# ---------------------------------------------------------------------------
 
 HEADINGS = [
     "SKU", "status", "errorDetails", "customSKU", "itemTitle", "itemDescription1",
@@ -38,54 +35,39 @@ HEADINGS = [
 
 
 def val(ws, row, col):
-    """Mirror sheet.getRange(row, col).getValue() -> "" instead of None."""
     v = ws.cell(row=row, column=col).value
     return "" if v is None else v
 
 
 def s(v):
-    if v is None:
-        return ""
-    return str(v)
+    return "" if v is None else str(v)
 
 
 def replace_first(text, old, new):
     return s(text).replace(old, new, 1)
 
 
-def is_not_number(v):
-    try:
-        float(s(v).strip())
-        return False
-    except (ValueError, TypeError):
-        return True
-
-
 def parse_column_setting(ws, col_setting):
-    """Parse column setting (letter like 'D' or '1' or header name) to 1-based index."""
     if not col_setting:
-        return 4  # Default column D
+        return 4  # Default Column D
 
-    col_setting_str = str(col_setting).strip()
+    col_str = str(col_setting).strip()
 
-    # Try column letter (e.g. 'D', 'AA')
-    if col_setting_str.isalpha():
+    if col_str.isalpha():
         try:
-            return column_index_from_string(col_setting_str.upper())
+            return column_index_from_string(col_str.upper())
         except ValueError:
             pass
 
-    # Try column integer index
-    if col_setting_str.isdigit():
-        return int(col_setting_str)
+    if col_str.isdigit():
+        return int(col_str)
 
-    # Search header row (Row 1) for matching column name
+    # Search header row (Row 1)
     for c in range(1, ws.max_column + 1):
-        header_val = str(val(ws, 1, c)).strip().lower()
-        if header_val == col_setting_str.lower():
+        if str(val(ws, 1, c)).strip().lower() == col_str.lower():
             return c
 
-    return 4  # Fallback to column D
+    return 4
 
 
 class OutputSheet:
@@ -98,9 +80,6 @@ class OutputSheet:
         self.rows.setdefault(row, {})[col] = value
         self.max_row = max(self.max_row, row)
         self.max_col = max(self.max_col, col)
-
-    def get_value(self, row, col):
-        return self.rows.get(row, {}).get(col, "")
 
     def to_workbook(self):
         wb = Workbook()
@@ -179,56 +158,40 @@ def get_item_title(regional_display_name, brand, gender, activity_group, article
 def construct_amount_map(price_ws):
     amount_map = {}
     for r in range(2, price_ws.max_row + 1):
-        row = [val(price_ws, r, c) for c in range(1, 6)]
-        custom_sku = row[2]  # Col C
+        custom_sku = val(price_ws, r, 3)  # Col C
         if custom_sku:
-            amount_map[custom_sku] = row
+            amount_map[custom_sku] = [val(price_ws, r, c) for c in range(1, 6)]
     return amount_map
 
 
 def construct_category_map(category_ws):
     category_map = {}
     for r in range(2, category_ws.max_row + 1):
-        row = [val(category_ws, r, c) for c in range(1, 4)]
-        key = row[0]  # Col A
+        key = val(category_ws, r, 1)  # Col A
         if key:
-            category_map[key] = row
+            category_map[key] = [val(category_ws, r, c) for c in range(1, 4)]
     return category_map
 
 
 def get_template_attribute1(size_chart_ws):
     size_chart_map = {}
     for r in range(2, size_chart_ws.max_row + 1):
-        row = [val(size_chart_ws, r, c) for c in range(1, 3)]
-        key = row[0]  # Col A
+        key = val(size_chart_ws, r, 1)  # Col A
         if key:
-            size_chart_map[key] = row
+            size_chart_map[key] = [val(size_chart_ws, r, c) for c in range(1, 3)]
     return size_chart_map
 
 
-def get_parent_sku(input_ws, row_idx, products_division):
+def get_parent_key(input_ws, row_idx, products_division):
     """
-    Parent SKU Rules:
-    - Apparel and Accessories: Use Style (Col 1)
-    - Footwear: Use Color No. (Col 9)
+    Apparel / Accessories: Parent Key = Style (Col 1)
+    Footwear: Parent Key = Color No. (Col 9)
     """
     if products_division in ["Apparel", "Accessories"]:
-        return val(input_ws, row_idx, 1)  # Style column
-    elif products_division == "Footwear":
-        return val(input_ws, row_idx, 9)  # Color No. column
-    else:
-        # Default fallback to Style (Col 1) if not specified
         return val(input_ws, row_idx, 1)
-
-
-def count_no_of_items(input_ws):
-    result = {}
-    for i in range(2, input_ws.max_row + 1):
-        products = val(input_ws, i, 14)
-        parent_sku = get_parent_sku(input_ws, i, products)
-        if parent_sku:
-            result[parent_sku] = result.get(parent_sku, 0) + 1
-    return result
+    elif products_division == "Footwear":
+        return val(input_ws, row_idx, 9)
+    return val(input_ws, row_idx, 1)
 
 
 def _normalize_sheet_name(name):
@@ -252,76 +215,97 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
                    progress_callback=None, custom_headings=None):
     amount_map = construct_amount_map(price_ws)
     category_map = construct_category_map(category_ws)
-    style_count_map = count_no_of_items(input_ws)
     size_chart_map = get_template_attribute1(size_chart_ws)
-
-    # Parse tracker price column (defaults to Col D if invalid)
     price_col_idx = parse_column_setting(input_ws, price_col_setting)
 
+    # Group row indices by Parent SKU
+    groups = {}
+    for r in range(2, input_ws.max_row + 1):
+        division = val(input_ws, r, 14)
+        parent_id = get_parent_key(input_ws, r, division)
+        if not parent_id:
+            parent_id = f"UNKNOWN_{r}"
+        groups.setdefault(parent_id, []).append(r)
+
     main = OutputSheet()
-    index = 2
-    last_row = input_ws.max_row
+    create_heading_for_target_sheet(main, custom_headings)
 
-    for i in range(2, last_row + 1):
-        if progress_callback and (i % 25 == 0 or i == last_row):
-            progress_callback(i - 1, last_row - 1)
+    current_out_row = 2
+    total_parents = len(groups)
+    p_counter = 0
 
-        if i == 2:
-            create_heading_for_target_sheet(main, custom_headings)
+    for parent_id, row_indices in groups.items():
+        p_counter += 1
+        if progress_callback:
+            progress_callback(p_counter, total_parents)
 
-        products_division = val(input_ws, i, 14)
-        custom_sku = val(input_ws, i, 16)
-        brand = val(input_ws, i, 3)
-        regional_display_name = val(input_ws, i, 2)
-        gender = val(input_ws, i, 5)
-        activity_group = val(input_ws, i, 8)
-        article_type = val(input_ws, i, 7)
-        search_color_name = val(input_ws, i, 13)
-        age_group = val(input_ws, i, 4)
-        article_group = val(input_ws, i, 6)
+        first_idx = row_indices[0]
 
-        # Apply Parent SKU logic
-        parent_sku = get_parent_sku(input_ws, i, products_division)
+        products_division = val(input_ws, first_idx, 14)
+        brand = val(input_ws, first_idx, 3)
+        regional_display_name = val(input_ws, first_idx, 2)
+        gender = val(input_ws, first_idx, 5)
+        activity_group = val(input_ws, first_idx, 8)
+        article_type = val(input_ws, first_idx, 7)
+        search_color_name = val(input_ws, first_idx, 13)
+        age_group = val(input_ws, first_idx, 4)
+        article_group = val(input_ws, first_idx, 6)
 
-        # Set Parent SKU into customSKU / Parent Column (Col 4)
-        main.set_value(index, 4, parent_sku if parent_sku else custom_sku)
-
-        # Set Item Title
         item_title = get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division)
-        main.set_value(index, 5, replace_spl_character(item_title))
-
-        # 1. Price / RRP Mapping: Read from selected Tracker Price Column
-        tracker_price = val(input_ws, i, price_col_idx)
-        if tracker_price != "":
-            # Set RRP into itemAmount (Col 17)
-            main.set_value(index, 17, tracker_price)
-        else:
-            # Fallback to Price Sheet itemAmount (Col D)
-            amount_map_value = amount_map.get(custom_sku)
-            if amount_map_value:
-                main.set_value(index, 17, amount_map_value[3])
-
-        # Sale Price mapping from Price Sheet if available
-        amount_map_value = amount_map.get(custom_sku)
-        if amount_map_value and len(amount_map_value) > 4:
-            main.set_value(index, 14, amount_map_value[4])  # Col E (salePrice)
-
-        # 2. Currency Code Setting (Col 18)
-        main.set_value(index, 18, currency_code)
-
-        # Category mapping
         mapped_key = f"{age_group}-{gender}-{article_group}-{article_type}-{activity_group}"
         cat_val = category_map.get(mapped_key)
-        if cat_val and len(cat_val) > 1:
-            main.set_value(index, 21, cat_val[1])  # Col B
+        cat_id = cat_val[1] if (cat_val and len(cat_val) > 1) else ""
 
-        # Size Chart mapping
         size_chart_key = f"{age_group}-{gender}-{article_group}-{article_type}"
         size_chart_val = size_chart_map.get(size_chart_key)
-        if size_chart_val and len(size_chart_val) > 1:
-            main.set_value(index, 56, "sizechart=" + s(size_chart_val[1]))
+        size_chart_attr = ("sizechart=" + s(size_chart_val[1])) if (size_chart_val and len(size_chart_val) > 1) else ""
 
-        index += 1
+        # Get parent price from tracker
+        parent_rrp = val(input_ws, first_idx, price_col_idx)
+
+        # -------------------------------------------------------------------
+        # 1. INSERT PARENT ROW
+        # -------------------------------------------------------------------
+        main.set_value(current_out_row, 1, parent_id)                      # SKU / Parent ID
+        main.set_value(current_out_row, 4, parent_id)                      # Seller SKU
+        main.set_value(current_out_row, 5, replace_spl_character(item_title)) # Item Title
+        main.set_value(current_out_row, 9, len(row_indices))               # noOfVariants
+        main.set_value(current_out_row, 17, parent_rrp)                    # RRP / itemAmount
+        main.set_value(current_out_row, 18, currency_code)                 # Currency Code
+        main.set_value(current_out_row, 21, cat_id)                        # Category ID
+        main.set_value(current_out_row, 23, brand)                         # Brand
+        if size_chart_attr:
+            main.set_value(current_out_row, 56, size_chart_attr)           # Template Attribute 1
+        
+        current_out_row += 1
+
+        # -------------------------------------------------------------------
+        # 2. INSERT VARIANT ROWS
+        # -------------------------------------------------------------------
+        for r_idx in row_indices:
+            custom_sku = val(input_ws, r_idx, 16)                          # Seller SKU
+            variant_rrp = val(input_ws, r_idx, price_col_idx)               # RRP from Tracker
+            
+            if variant_rrp == "":
+                amt_val = amount_map.get(custom_sku)
+                if amt_val:
+                    variant_rrp = amt_val[3]
+
+            amt_val = amount_map.get(custom_sku)
+            sale_price = amt_val[4] if (amt_val and len(amt_val) > 4) else ""
+
+            main.set_value(current_out_row, 1, parent_id)                  # Parent SKU Reference
+            main.set_value(current_out_row, 4, custom_sku)                 # Seller SKU (customSKU)
+            main.set_value(current_out_row, 5, replace_spl_character(item_title))
+            main.set_value(current_out_row, 14, sale_price)                # Sale Price
+            main.set_value(current_out_row, 17, variant_rrp)               # RRP / itemAmount
+            main.set_value(current_out_row, 18, currency_code)             # Currency Code
+            main.set_value(current_out_row, 21, cat_id)                    # Category ID
+            main.set_value(current_out_row, 23, brand)                     # Brand
+            if size_chart_attr:
+                main.set_value(current_out_row, 56, size_chart_attr)
+
+            current_out_row += 1
 
     return main
 
