@@ -3,45 +3,40 @@ import traceback
 from datetime import datetime
 
 import streamlit as st
+from openpyxl import load_workbook
 
 from logic import build_output_workbook, ConversionError
 from github_utils import get_file, put_file, GitHubError
 
-st.set_page_config(page_title="Product Feed Generator", layout="centered")
+st.set_page_config(page_title="Product Feed Generator - Zecom Tracker", layout="wide")
 st.title("Product Feed Generator")
-st.caption(
-    "Port of the original Apps Script: reads Input / Price Sheet / "
-    "Category sheet / Size chart (and optional Stock sheet) and produces "
-    "an Output sheet."
-)
+st.caption("Generate ZECOM feed outputs using custom input sheets and uploaded mapping criteria.")
 
 # ---------------------------------------------------------------------------
 # Sidebar: GitHub connection settings
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("GitHub connection")
-    token = st.text_input("GitHub token (Personal Access Token)", type="password",
-                           help="Needs 'repo' scope (or fine-grained contents:read/write) on the target repo.")
-    owner = st.text_input("Repo owner", placeholder="my-org")
-    repo = st.text_input("Repo name", placeholder="product-feed")
+    st.header("GitHub Connection")
+    token = st.text_input("GitHub Token (PAT)", type="password",
+                           help="Needs 'repo' scope on target repo.")
+    owner = st.text_input("Repo Owner", placeholder="my-org")
+    repo = st.text_input("Repo Name", placeholder="product-feed")
     branch = st.text_input("Branch", value="main")
     st.markdown("---")
     keep_debug_writes = st.checkbox(
-        "Reproduce original debug writes (rows 1-3, columns A-C)",
+        "Reproduce debug writes (columns A-C)",
         value=False,
-        help="The original Apps Script had leftover debug lines writing "
-             "mappingKey/childIndex/full map into output columns A-C at the "
-             "input row number. Off by default since it looks unintentional.",
+        help="Writes debug information into output columns A-C.",
     )
 
-st.subheader("1. Get the input workbook")
-source = st.radio("Input source", ["Upload a file", "Pull from GitHub"], horizontal=True)
+st.subheader("1. Input Data Source")
+source = st.radio("Main Input Source", ["Upload File", "Pull from GitHub"], horizontal=True)
 
 input_bytes = None
 input_label = None
 
-if source == "Upload a file":
-    uploaded = st.file_uploader("Input workbook (.xlsx)", type=["xlsx"])
+if source == "Upload File":
+    uploaded = st.file_uploader("Upload Main Input Workbook (.xlsx)", type=["xlsx"], key="main_input")
     if uploaded is not None:
         input_bytes = uploaded.read()
         input_label = uploaded.name
@@ -49,10 +44,10 @@ else:
     input_path = st.text_input("Path in repo", placeholder="data/input.xlsx")
     if st.button("Fetch from GitHub"):
         if not (token and owner and repo and input_path):
-            st.error("Fill in the GitHub token, owner, repo and file path first.")
+            st.error("Fill in GitHub credentials and file path first.")
         else:
             try:
-                with st.spinner(f"Fetching {input_path} from {owner}/{repo}@{branch}..."):
+                with st.spinner(f"Fetching {input_path}..."):
                     content, sha = get_file(owner, repo, input_path, token, branch)
                 st.session_state["gh_input_bytes"] = content
                 st.session_state["gh_input_path"] = input_path
@@ -64,30 +59,51 @@ else:
         input_bytes = st.session_state["gh_input_bytes"]
         input_label = st.session_state["gh_input_path"]
 
-if input_bytes:
-    st.info(f"Using input: **{input_label}** ({len(input_bytes):,} bytes)")
+st.markdown("---")
+st.subheader("2. Upload Specific Mapping Sheets (Optional / Override)")
+st.caption("You can upload standalone files for specific mapping sheets or let the system read them from the main workbook.")
 
-st.subheader("2. Generate the Output sheet")
+col1, col2 = st.columns(2)
 
-if input_bytes:
-    with st.expander("Diagnostics: what's in this file", expanded=False):
-        try:
-            from openpyxl import load_workbook
-            import io as _io
-            _wb = load_workbook(_io.BytesIO(input_bytes), data_only=True)
-            st.write("Sheets found:", _wb.sheetnames)
-            for _name in _wb.sheetnames:
-                _ws = _wb[_name]
-                st.write(f"- **{_name}**: {_ws.max_row} rows x {_ws.max_column} cols")
-        except Exception as _e:
-            st.warning(f"Could not inspect the file: {_e}")
+with col1:
+    price_file = st.file_uploader(
+        "Price Sheet (.xlsx)", 
+        type=["xlsx"], 
+        help="Columns expected: Col C = customSKU, Col D = Item Amount, Col E = Sale Price"
+    )
+    category_file = st.file_uploader(
+        "Category Sheet (.xlsx)", 
+        type=["xlsx"], 
+        help="Columns expected: Col A = Lookup Key, Col B = Category ID"
+    )
 
-run_clicked = st.button("Run conversion", type="primary", disabled=not input_bytes)
+with col2:
+    size_chart_file = st.file_uploader(
+        "Size Chart Sheet (.xlsx)", 
+        type=["xlsx"], 
+        help="Columns expected: Col A = Lookup Key, Col B = Template Attribute/Value"
+    )
+    sample_output_file = st.file_uploader(
+        "Sample Output Template Sheet (.xlsx)", 
+        type=["xlsx"], 
+        help="Upload a sample sheet to dynamically derive the output columns/headers."
+    )
+
+# Process standalone sheet bytes
+price_bytes = price_file.read() if price_file else None
+category_bytes = category_file.read() if category_file else None
+size_chart_bytes = size_chart_file.read() if size_file else None if 'size_file' in locals() else (size_chart_file.read() if size_chart_file else None)
+sample_output_bytes = sample_output_file.read() if sample_output_file else None
+
+st.markdown("---")
+st.subheader("3. Generate Output Sheet")
+
+run_clicked = st.button("Run Conversion", type="primary", disabled=not input_bytes)
 if not input_bytes:
-    st.caption("Upload or fetch an input workbook above first.")
+    st.caption("Please provide an input workbook above to proceed.")
 
 if run_clicked and input_bytes:
-    progress_bar = st.progress(0.0, text="Starting...")
+    progress_bar = st.progress(0.0, text="Starting conversion...")
 
     def progress_callback(done, total):
         frac = min(done / max(total, 1), 1.0)
@@ -96,12 +112,16 @@ if run_clicked and input_bytes:
     try:
         output_bytes = build_output_workbook(
             input_bytes,
+            price_bytes=price_bytes,
+            category_bytes=category_bytes,
+            size_chart_bytes=size_chart_bytes,
+            sample_output_bytes=sample_output_bytes,
             keep_debug_writes=keep_debug_writes,
             progress_callback=progress_callback,
         )
         progress_bar.progress(1.0, text="Done")
         st.session_state["output_bytes"] = output_bytes
-        st.success("Conversion complete.")
+        st.success("Output sheet generated and populated successfully!")
     except ConversionError as e:
         progress_bar.empty()
         st.error(str(e))
@@ -110,54 +130,33 @@ if run_clicked and input_bytes:
         st.error(f"Conversion failed: {e}")
         st.code(traceback.format_exc())
 
+# Download / Push section
 if "output_bytes" in st.session_state:
-    st.subheader("3. Get the result")
+    st.subheader("4. Download or Export Output")
     out_bytes = st.session_state["output_bytes"]
 
-    default_name = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    default_name = f"zecom_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     st.download_button(
-        "Download Output.xlsx",
+        "Download Output Sheet (.xlsx)",
         data=out_bytes,
         file_name=default_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    st.markdown("**Push result to GitHub**")
-    output_path = st.text_input("Path in repo to write output to", placeholder="data/output.xlsx")
-    commit_msg = st.text_input("Commit message", value="Update generated product feed output")
+    st.markdown("**Push directly to GitHub Repo**")
+    output_path = st.text_input("Path in repo for output file", placeholder="data/output.xlsx")
+    commit_msg = st.text_input("Commit message", value="Update generated ZECOM product feed output")
 
     if st.button("Commit to GitHub"):
         if not (token and owner and repo and output_path):
-            st.error("Fill in the GitHub token, owner, repo and output path first.")
+            st.error("Fill in GitHub credentials and output path first.")
         else:
             try:
-                with st.spinner(f"Committing {output_path} to {owner}/{repo}@{branch}..."):
+                with st.spinner(f"Committing {output_path}..."):
                     result = put_file(owner, repo, output_path, out_bytes, commit_msg, token, branch)
                 commit_url = result.get("commit", {}).get("html_url")
-                st.success("Pushed to GitHub.")
+                st.success("Successfully pushed to GitHub!")
                 if commit_url:
-                    st.markdown(f"[View commit]({commit_url})")
+                    st.markdown(f"[View Commit on GitHub]({commit_url})")
             except GitHubError as e:
                 st.error(str(e))
-
-st.markdown("---")
-with st.expander("Expected input workbook format"):
-    st.markdown(
-        """
-The uploaded/fetched `.xlsx` must contain these sheets (names must match exactly):
-
-- **Input** — the raw product rows (same column layout as the original: e.g.
-  column N = product division `Footwear`/`Apparel`/`Accessories`/`Socks`,
-  column A or I = style depending on division, column P = customSKU, etc.)
-- **Price Sheet** — columns A:E, customSKU in column C, item amount in D, sale
-  price in E.
-- **Category sheet** — columns A:C, lookup key in column A, category ID in
-  column B.
-- **Size chart** — columns A:B, lookup key in column A.
-- **Stock sheet** *(optional, currently unused in output — kept for parity
-  with the original script)*.
-
-The generated **Output** sheet mirrors the original 60-column layout (SKU,
-status, errorDetails, customSKU, itemTitle, ... postAsNonVariant).
-        """
-    )
