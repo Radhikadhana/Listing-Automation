@@ -1,11 +1,12 @@
 """
 Logic module for Product Feed Generator / Zecom Tracker processing.
+- Maps output dynamically using exact column header names.
 - Handles missing/empty Graas SKU gracefully.
 - Sets Parent Row variation1 = "color_family" and variation2 = "size".
 - Sets Variant Row variation1 = Color Name (Col 9) and variation2 = Size UK (Col 22).
-- Populates total variation count in noOfVariants (Col 9 in output).
+- Populates total variation count in noOfVariants header.
 - Sorts child variants sequentially by size order (Alpha/Numeric).
-- Maps formatted details into templateAttributes (descriptions/care/sizecharts).
+- Appends descriptions and care instructions into template attributes.
 """
 
 from openpyxl import Workbook, load_workbook
@@ -97,6 +98,8 @@ class OutputSheet:
         self.max_row = 0
 
     def set_value(self, row, col, value):
+        if col is None or col < 1:
+            return
         self.rows.setdefault(row, {})[col] = value
         self.max_row = max(self.max_row, row)
         self.max_col = max(self.max_col, col)
@@ -115,8 +118,12 @@ class OutputSheet:
 
 def create_heading_for_target_sheet(main: OutputSheet, custom_headings=None):
     headings = custom_headings if custom_headings else HEADINGS
+    col_map = {}
     for i, h in enumerate(headings):
-        main.set_value(1, i + 1, h)
+        col_idx = i + 1
+        main.set_value(1, col_idx, h)
+        col_map[str(h).strip()] = col_idx
+    return col_map
 
 
 def replace_spl_character(value):
@@ -300,7 +307,13 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         groups.setdefault(parent_id, []).append(r)
 
     main = OutputSheet()
-    create_heading_for_target_sheet(main, custom_headings)
+    col = create_heading_for_target_sheet(main, custom_headings)
+
+    # Helper function to write by Header Name
+    def set_by_header(row, header_name, value):
+        c_idx = col.get(header_name)
+        if c_idx:
+            main.set_value(row, c_idx, value)
 
     current_out_row = 2
     total_parents = len(groups)
@@ -337,32 +350,31 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         parent_rrp = val(input_ws, first_idx, price_col_idx)
         short_desc = build_short_description(input_ws, first_idx)
 
-        # Build Description Template Attributes
         desc_attr = f"description={replace_spl_character(long_description)}" if long_description else ""
         care_attr = f"care={replace_spl_character(care_instruction)}" if care_instruction else ""
 
         # -------------------------------------------------------------------
         # 1. INSERT PARENT ROW
         # -------------------------------------------------------------------
-        main.set_value(current_out_row, 1, parent_id)                         # SKU / Parent ID
-        main.set_value(current_out_row, 4, parent_id)                         # customSKU
-        main.set_value(current_out_row, 5, replace_spl_character(item_title))    # itemTitle
-        main.set_value(current_out_row, 9, len(row_indices))                  # noOfVariants
-        main.set_value(current_out_row, 10, "color_family")                   # variation1
-        main.set_value(current_out_row, 11, "size")                           # variation2
-        main.set_value(current_out_row, 13, replace_spl_character(short_desc))  # shortDescription
-        main.set_value(current_out_row, 17, parent_rrp)                       # itemAmount
-        main.set_value(current_out_row, 18, currency_code)                    # currencyCode
-        main.set_value(current_out_row, 21, cat_id)                           # categoryID
-        main.set_value(current_out_row, 23, brand)                            # brand
-        main.set_value(current_out_row, 30, f"1 X {replace_spl_character(item_title)}") # packageContent
+        set_by_header(current_out_row, "SKU", parent_id)
+        set_by_header(current_out_row, "customSKU", parent_id)
+        set_by_header(current_out_row, "itemTitle", replace_spl_character(item_title))
+        set_by_header(current_out_row, "noOfVariants", len(row_indices))
+        set_by_header(current_out_row, "variation1", "color_family")
+        set_by_header(current_out_row, "variation2", "size")
+        set_by_header(current_out_row, "shortDescription", replace_spl_character(short_desc))
+        set_by_header(current_out_row, "itemAmount", parent_rrp)
+        set_by_header(current_out_row, "currencyCode", currency_code)
+        set_by_header(current_out_row, "categoryID", cat_id)
+        set_by_header(current_out_row, "brand", brand)
+        set_by_header(current_out_row, "packageContent", f"1 X {replace_spl_character(item_title)}")
         
         if size_chart_attr:
-            main.set_value(current_out_row, 56, size_chart_attr)              # templateAttribute1
+            set_by_header(current_out_row, "templateAttribute1", size_chart_attr)
         if desc_attr:
-            main.set_value(current_out_row, 57, desc_attr)                     # templateAttribute2
+            set_by_header(current_out_row, "templateAttribute2", desc_attr)
         if care_attr:
-            main.set_value(current_out_row, 59, care_attr)                     # templateAttribute4
+            set_by_header(current_out_row, "templateAttribute4", care_attr)
 
         current_out_row += 1
 
@@ -375,10 +387,10 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         )
 
         for r_idx in sorted_row_indices:
-            custom_sku = s(val(input_ws, r_idx, 16)).strip()                   # customSKU
-            variant_rrp = val(input_ws, r_idx, price_col_idx)                  # RRP from Tracker
-            color_name = val(input_ws, r_idx, 9)                              # variation1 = Color Name (Col 9)
-            size_uk_val = get_variation2_size(input_ws, r_idx)                # variation2 = Size UK (Col 22)
+            custom_sku = s(val(input_ws, r_idx, 16)).strip()
+            variant_rrp = val(input_ws, r_idx, price_col_idx)
+            color_name = val(input_ws, r_idx, 9)              # Color Name from Input Sheet
+            size_uk_val = get_variation2_size(input_ws, r_idx)  # Size UK from Input Sheet
 
             amt_val = amount_map.get(custom_sku) if custom_sku else None
             if variant_rrp == "" and amt_val:
@@ -386,25 +398,25 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
 
             sale_price = amt_val[4] if (amt_val and len(amt_val) > 4) else ""
 
-            main.set_value(current_out_row, 1, parent_id)                     # SKU
-            main.set_value(current_out_row, 4, custom_sku)                    # customSKU
-            main.set_value(current_out_row, 5, replace_spl_character(item_title)) # itemTitle
-            main.set_value(current_out_row, 10, color_name)                   # variation1 = Color Name
-            main.set_value(current_out_row, 11, size_uk_val)                  # variation2 = Size UK
-            main.set_value(current_out_row, 13, replace_spl_character(short_desc)) # shortDescription
-            main.set_value(current_out_row, 14, sale_price)                   # salePrice
-            main.set_value(current_out_row, 17, variant_rrp)                  # itemAmount
-            main.set_value(current_out_row, 18, currency_code)                # currencyCode
-            main.set_value(current_out_row, 21, cat_id)                       # categoryID
-            main.set_value(current_out_row, 23, brand)                        # brand
-            main.set_value(current_out_row, 30, f"1 X {replace_spl_character(item_title)}") # packageContent
+            set_by_header(current_out_row, "SKU", parent_id)
+            set_by_header(current_out_row, "customSKU", custom_sku)
+            set_by_header(current_out_row, "itemTitle", replace_spl_character(item_title))
+            set_by_header(current_out_row, "variation1", color_name)
+            set_by_header(current_out_row, "variation2", size_uk_val)
+            set_by_header(current_out_row, "shortDescription", replace_spl_character(short_desc))
+            set_by_header(current_out_row, "salePrice", sale_price)
+            set_by_header(current_out_row, "itemAmount", variant_rrp)
+            set_by_header(current_out_row, "currencyCode", currency_code)
+            set_by_header(current_out_row, "categoryID", cat_id)
+            set_by_header(current_out_row, "brand", brand)
+            set_by_header(current_out_row, "packageContent", f"1 X {replace_spl_character(item_title)}")
             
             if size_chart_attr:
-                main.set_value(current_out_row, 56, size_chart_attr)         # templateAttribute1
+                set_by_header(current_out_row, "templateAttribute1", size_chart_attr)
             if desc_attr:
-                main.set_value(current_out_row, 57, desc_attr)             # templateAttribute2
+                set_by_header(current_out_row, "templateAttribute2", desc_attr)
             if care_attr:
-                main.set_value(current_out_row, 59, care_attr)             # templateAttribute4
+                set_by_header(current_out_row, "templateAttribute4", care_attr)
 
             current_out_row += 1
 
