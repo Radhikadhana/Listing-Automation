@@ -1,500 +1,876 @@
-"""
-Logic module for Product Feed Generator / Zecom Tracker processing.
-- Includes exact JavaScript logic translation for getItemTitle and formTitle.
-- Sets Parent Row variation1 = "color_family" and variation2 = "size".
-- Sets Variant Row variation1 = Color Name (Col 9) and variation2 = Size UK (Col 22).
-- Handles missing/empty SKUs safely.
-- Sorts child variants sequentially by size order (Alpha/Numeric).
-"""
+function main() {
+  var amountMap = constructAmountMap();
+  var quantityMap = constructQuantityMap();
+  var categoryMap = constructCategoryMap();
+  var styleCountMap = countNoOfItems();
+  myFunction(amountMap, quantityMap, categoryMap, styleCountMap);
+}
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import column_index_from_string
-import io
-
-# Standard clothing size order for sorting
-SIZE_ORDER = [
-    "3XS", "XXXS", "XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL",
-    "XL", "XXL", "XXXL", "3XL", "4XL", "5XL", "6XL", "1-2Y", "2-3Y",
-    "3-4Y", "4-5Y", "5-6Y", "6-7Y", "7-8Y", "8-9Y", "9-10Y", "10-11Y",
-    "11-12Y", "12-13Y", "13-14Y", "14-15Y", "15-16Y", "6Y", "8Y", "10Y",
-    "12Y", "14Y", "16Y", "18Y", "20Y", "OSFA", "ONE SIZE", "UA", "MINI",
-    "KIDS", "ADULT", "YOUTH"
-]
-
-
-class ConversionError(Exception):
-    """Raised for issues that prevent proper generation of the Output sheet."""
-    pass
-
-
-HEADINGS = [
-    "SKU", "status", "errorDetails", "customSKU", "itemTitle", "itemDescription1",
-    "itemDescription2", "itemDescription3", "noOfVariants", "variation1",
-    "variation2", "variation3", "shortDescription", "salePrice", "saleStartDate",
-    "saleEndDate", "itemAmount", "currencyCode", "noOfItem", "imageURI",
-    "categoryID", "taxClass", "brand", "model", "warrantyType",
-    "packageWeight(kg)", "packageHeight(cm)", "packageLength(cm)",
-    "packageWidth(cm)", "packageContent", "itemSpecifics1", "itemSpecifics2",
-    "itemSpecifics3", "itemSpecifics4", "itemSpecifics5", "itemSpecifics6",
-    "itemSpecifics7", "itemSpecifics8", "itemSpecifics9", "itemSpecifics10",
-    "itemSpecifics11", "itemSpecifics12", "itemSpecifics13", "itemSpecifics14",
-    "itemSpecifics15", "itemSpecifics16", "itemSpecifics17", "itemSpecifics18",
-    "itemSpecifics19", "itemSpecifics20", "itemSpecifics21", "itemSpecifics22",
-    "itemSpecifics23", "itemSpecifics24", "itemSpecifics25", "templateAttribute1",
-    "templateAttribute2", "templateAttribute3", "templateAttribute4",
-    "templateAttribute5", "postAsNonVariant",
-]
-
-
-def val(ws, row, col):
-    v = ws.cell(row=row, column=col).value
-    return "" if v is None else v
-
-
-def s(v):
-    return "" if v is None else str(v)
-
-
-def is_not_number(v):
-    try:
-        float(s(v).strip())
-        return False
-    except (ValueError, TypeError):
-        return True
-
-
-def parse_column_setting(ws, col_setting):
-    if not col_setting:
-        return 4
-
-    col_str = str(col_setting).strip()
-
-    if col_str.isalpha():
-        try:
-            return column_index_from_string(col_str.upper())
-        except ValueError:
-            pass
-
-    if col_str.isdigit():
-        return int(col_str)
-
-    for c in range(1, ws.max_column + 1):
-        if str(val(ws, 1, c)).strip().lower() == col_str.lower():
-            return c
-
-    return 4
-
-
-class OutputSheet:
-    def __init__(self):
-        self.rows = {}
-        self.max_col = 0
-        self.max_row = 0
-
-    def set_value(self, row, col, value):
-        if col is None or col < 1:
-            return
-        self.rows.setdefault(row, {})[col] = value
-        self.max_row = max(self.max_row, row)
-        self.max_col = max(self.max_col, col)
-
-    def to_workbook(self):
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Output"
-        for r in range(1, self.max_row + 1):
-            for c in range(1, self.max_col + 1):
-                v = self.rows.get(r, {}).get(c)
-                if v is not None and v != "":
-                    ws.cell(row=r, column=c, value=v)
-        return wb
-
-
-def create_heading_for_target_sheet(main: OutputSheet, custom_headings=None):
-    headings = custom_headings if custom_headings else HEADINGS
-    for i, h in enumerate(headings):
-        main.set_value(1, i + 1, h)
-
-
-def replace_spl_character(value):
-    value = s(value)
-    pairs = [
-        ("â€œ", "\u201c"), ("â€", "\u201d"), ("â€˜", "\u2018"), ("â€™", "\u2019"),
-        ("â€”", "\u2013"), ("â€“", "\u2014"), ("â€•", "-"), ("â€¦", "\u2026"),
-        ("Ã˜", "\u00d8"), ("Ã‚Â®", "\u00ae"), ("Â³", "\u00b3"), ("Â®", "\u00ae"),
-    ]
-    for old, new in pairs:
-        value = value.replace(old, new, 1)
-    return value
-
-
-def removeDuplicates(title):
-    parts = s(title).split(" ")
-    result = []
-    for p in parts:
-        if p not in result:
-            result.append(p)
-    return " ".join(result)
-
-
-# -------------------------------------------------------------------
-# EXACT CODE TRANSLATION FOR formTitle & getItemTitle
-# -------------------------------------------------------------------
-
-def formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender, searchColorName, productsDivision):
-    title = "[NEW] "
-    brand, newRegionalDisplayName, searchColorName = s(brand), s(newRegionalDisplayName), s(searchColorName)
+function myFunction(amountMap, quantityMap, categoryMap, styleCountMap) {
+  var main = SpreadsheetApp.getActive().getSheetByName("Output");
+  var inputSheet = SpreadsheetApp.getActive().getSheetByName("Input");
+  var processedStyle = [];
+  var index = 2;
+  var parentRow = 2;
+  var processedParentCount = 0;
+  var currentParentIndex = 2;
+  var childIndex = 0;
+  var childUpdateIndexMap = {};
+  for (var i = 2; i <= inputSheet.getLastRow(); i++) {
+    if (i == 2) {
+      createHeadingForTargetSheet(main);
+    }
+    var style;
+    var style_next_row;
+    var products = inputSheet.getRange(i, 14).getValue();
+    if (products == "Footwear") {
+       style = inputSheet.getRange(i, 9).getValue();
+       style_next_row = inputSheet.getRange(i + 1, 9).getValue();
+    } else {
+      style = inputSheet.getRange(i, 1).getValue();
+      style_next_row = inputSheet.getRange(i + 1, 1).getValue();
+    }
     
-    if "Licence" in brand:
-        brandNameChanges = brand.replace("Licence", "PUMA", 1)
-        title += brandNameChanges
-    else:
-        title += brand
+    if ((styleCountMap[style] == 1) || ((style == style_next_row) && processedStyle.indexOf(style) == -1)) {
+      fillParentRow(main, inputSheet, index, i, categoryMap, amountMap, styleCountMap, childUpdateIndexMap);
+      currentParentIndex = index;
+      if (styleCountMap[style] > 1) {
+        //Avoid increasing parent count for NV case
+        parentRow = i + processedParentCount;
+        processedParentCount++;
+      }
+      index++;
+    }
+    if (styleCountMap[style] == 1) {
+      //Non variant, so need to avoid creating child rows.
+      //Logger.log("NV index : ", index);
+      continue;
+    }
+    //Logger.log("child index : ", index);
+    var customSku = inputSheet.getRange(i, 16).getValue();
+    var variation1 = inputSheet.getRange(i, 12).getValue();
+    var newVariation1;
+    if (variation1.includes("Puma")) {
+      newVariation1 = variation1.replace("Puma", "PUMA");
+    } else {
+      newVariation1 = variation1;
+    }
+    var variationTwo = variation2(i);
+    var temp_var_2 = variationTwo;
+    if (temp_var_2.indexOf(" L") != -1) {
+      temp_var_2 = temp_var_2.replace("Int:W", "").replace("Int:", "").replace("W", "").replace(" L", "/");
+    }
+    var mappingKey = variation1 + "_" + temp_var_2.replace("UK:", "").replace("FR:", "").replace("US:", "").replace("ASIA:", "").replace("Int:", "").replace(" yrs", "Y").replace("W", "").replace(" L", "/");
+    main.getRange(i, 2).setValue("mappingKey : " + mappingKey);
+    childIndex = childUpdateIndexMap[mappingKey];
 
-    if gender is not None and gender != "" and gender not in title:
-        if gender == "Unisex":
-            title += " " + gender
+    main.getRange(i, 3).setValue("childIndex : " + childIndex);
+    childIndex = childIndex + parentRow + 1;
+    main.getRange(i, 1).setValue(childUpdateIndexMap);
+    main.getRange(childIndex, 11).setValue(variationTwo);
+    processedStyle.push(style);
+    //debugger;
+    var amountMapValue = amountMap[customSku];
+    if (amountMapValue != "" && amountMapValue != undefined) {
+      var itemAmount = amountMapValue[3];
+      var salePrice = amountMapValue[4];
+    } else {
+      main.getRange(childIndex, 17).setValue("error");
+      main.getRange(childIndex, 14).setValue("error");
+    }
+    //will un-comment - if need to fill qty
+    //    if(quantityMap !="" && quantityMap!= undefined){
+    //      var quantityMapValue = quantityMap[customSku];
+    //    } else {
+    //      main.getRange(childIndex, 19).setValue("error");
+    //    }
+    //    if(quantityMapValue !="" && quantityMapValue!= undefined) {
+    //      var noOfItem = quantityMapValue[1];
+    //    } else {
+    //      main.getRange(childIndex, 19).setValue("error");
+    //    }
 
-    if newRegionalDisplayName not in title:
-        checkRegionalDisplayName = ""
-        if "Trainers" in newRegionalDisplayName:
-            checkRegionalDisplayName = newRegionalDisplayName.replace("Trainers", "Shoes", 1)
-            title += " " + checkRegionalDisplayName
-        elif "Sandals" in newRegionalDisplayName:
-            checkRegionalDisplayName = newRegionalDisplayName.replace("Sandals", "Sports Sandals", 1)
-            title += " " + checkRegionalDisplayName
-        elif "Slides" in newRegionalDisplayName:
-            checkRegionalDisplayName = newRegionalDisplayName.replace("Slides", "Slides Slippers", 1)
-            title += " " + checkRegionalDisplayName
-        elif "Trainer" in newRegionalDisplayName:
-            checkRegionalDisplayName = newRegionalDisplayName.replace("Trainer", "Shoes", 1)
-            title += " " + checkRegionalDisplayName
-        else:
-            title += " " + newRegionalDisplayName
-
-    if productsDivision == "Footwear":
-        if searchColorName not in title:
-            title += " (" + searchColorName + ") "
-
-    return title
-
-
-def getItemTitle(regionalDisplayName, brand, gender, activityGroup, articleType, searchColorName, productsDivision):
-    regionalDisplayName, searchColorName = s(regionalDisplayName), s(searchColorName)
-    newRegionalDisplayName = ""
-    getSearchColorName = ""
-
-    if "’s" in regionalDisplayName:
-        newRegionalDisplayName = regionalDisplayName.replace("’s", "'s™", 1)
-    else:
-        newRegionalDisplayName = regionalDisplayName
-
-    if " - " in searchColorName:
-        getSearchColorName = searchColorName.split(" - ")[1]
-    else:
-        getSearchColorName = searchColorName
-
-    if "Men" in regionalDisplayName or "Women" in regionalDisplayName:
-        title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, "", getSearchColorName, productsDivision)
-        itemTitle = removeDuplicates(title)
-    else:
-        title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender, getSearchColorName, productsDivision)
-        itemTitle = removeDuplicates(title)
-
-    return itemTitle
-
-
-# -------------------------------------------------------------------
-
-def get_variation2_size(input_ws, i):
-    """Extracts Size UK (Col 22) or calculates formatted size variation string."""
-    product_division = val(input_ws, i, 14)
-    size_uk = val(input_ws, i, 22)
-    size_fr = val(input_ws, i, 21)
-    size_asia = val(input_ws, i, 23)
-    size_us = val(input_ws, i, 20)
-
-    if size_uk != "":
-        return s(size_uk)
-
-    variation = None
-    if product_division in ("Footwear", "Accessories", "Socks"):
-        if size_uk != "":
-            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
-        else:
-            variation = ("Int:" + s(size_fr)) if is_not_number(size_fr) else ("US:" + s(size_fr))
-    elif product_division == "Apparel":
-        if size_uk != "":
-            variation = ("Int:" + s(size_uk)) if is_not_number(size_uk) else ("UK:" + s(size_uk))
-        elif size_us != "":
-            variation = ("Int:" + s(size_us)) if is_not_number(size_us) else ("US:" + s(size_us))
-        else:
-            variation = ("Int:" + s(size_asia)) if is_not_number(size_asia) else ("ASIA:" + s(size_asia))
-
-    return s(variation) if variation else ""
+    var ageGroup = inputSheet.getRange(i, 4).getValue();
+    var articleGroup = inputSheet.getRange(i, 6).getValue();
 
 
-def size_sort_key(size_str):
-    """Helper key generator for sorting variants by size."""
-    clean_size = s(size_str).upper().replace("UK:", "").replace("US:", "").replace("INT:", "").replace("ASIA:", "").strip()
-    if clean_size in SIZE_ORDER:
-        return (0, SIZE_ORDER.index(clean_size))
-    try:
-        return (1, float(clean_size))
-    except ValueError:
-        return (2, clean_size)
+    var brand = inputSheet.getRange(i, 3).getValue();
+    var regionalDispalyName = inputSheet.getRange(i, 2).getValue();
+    var gender = inputSheet.getRange(i, 5).getValue();
+    var activityGroup = inputSheet.getRange(i, 8).getValue();
+    var articleType = inputSheet.getRange(i, 7).getValue();
+    var searchColorName = inputSheet.getRange(i, 13).getValue();
+    var images = inputSheet.getRange(i, 15).getValue();
 
 
-def build_short_description(input_ws, idx):
-    """Builds short description HTML bullet list from tracker metadata."""
-    color_name = val(input_ws, idx, 9) or val(input_ws, idx, 13)
-    fields = [
-        ("Brand", val(input_ws, idx, 3)),
-        ("Color Name", color_name),
-        ("Gender", val(input_ws, idx, 5)),
-        ("Activity Group", val(input_ws, idx, 8)),
-        ("Collection", val(input_ws, idx, 26)),
-        ("Material", val(input_ws, idx, 27)),
-        ("Upper Material", val(input_ws, idx, 29)),
-        ("Mid Sole Material", val(input_ws, idx, 30)),
-        ("Outer Sole Material", val(input_ws, idx, 31)),
-        ("Style Number", val(input_ws, idx, 1)),
-    ]
-    items = [f"<li>{k} : {v}</li>" for k, v in fields if v not in ("", None, "Other")]
-    return f"<ul>{''.join(items)}</ul>" if items else ""
+    var longDescription = inputSheet.getRange(i, 25).getValue();
+    var collection = inputSheet.getRange(i, 26).getValue();
+    var material = inputSheet.getRange(i, 27).getValue();
+    var materialLocal = inputSheet.getRange(i, 28).getValue();
+    var upperMaterial = inputSheet.getRange(i, 29).getValue();
+    var midSoleMaterial = inputSheet.getRange(i, 30).getValue();
+    var outerSoleMaterial = inputSheet.getRange(i, 31).getValue();
+    var shellMaterial = inputSheet.getRange(i, 32).getValue();
+
+    var neck = inputSheet.getRange(i, 12).getValue();
+    var sleeves = inputSheet.getRange(i, 12).getValue();
+    var supportlevel = inputSheet.getRange(i, 12).getValue();
+    var toeType = inputSheet.getRange(i, 33).getValue();
+    var heelType = inputSheet.getRange(i, 34).getValue();
+    var fastener = inputSheet.getRange(i, 66).getValue();
+    var fit = inputSheet.getRange(i, 67).getValue();
+    var pumaTechnology = inputSheet.getRange(i, 35).getValue();
+    var technologyPurpose = inputSheet.getRange(i, 36).getValue();
+    var colorName = inputSheet.getRange(i, 9).getValue();
+    var title;
+    var itemTitle;
+    var newRegionalDisplayName;
+    var getSearchColorName;
+    if (regionalDispalyName.includes("’s")) {
+      newRegionalDisplayName = regionalDispalyName.replace("’s", "'s™");
+    } else {
+      newRegionalDisplayName = regionalDispalyName;
+    }
+    if (searchColorName.includes(' - ')) {
+      getSearchColorName = searchColorName.split(' - ')[1];
+    }
+    if (regionalDispalyName.includes("Men") || regionalDispalyName.includes("Women")) {
+      title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType,"",getSearchColorName,products);
+      itemTitle = removeDuplicates(title);
+    } else {
+      title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender,getSearchColorName,products);
+      itemTitle = removeDuplicates(title);
+    }
+    var mappedKey = ageGroup + '-' + gender + '-' + articleGroup + '-' + articleType + '-' + activityGroup;
+    var categoryMapValue = categoryMap[mappedKey];
+
+    if (categoryMapValue != undefined && categoryMapValue.length > 0) {
+      main.getRange(childIndex, 21).setValue(categoryMapValue[1]);
+    } else {
+      main.getRange(index, 21).setValue("error");
+    }
+    debugger;
+    main.getRange(childIndex, 4).setValue(customSku);
+    main.getRange(childIndex, 5).setValue(replaceSplCharacter(itemTitle));
+    if (salePrice != undefined && salePrice != "") {
+      main.getRange(childIndex, 14).setValue(salePrice);
+    }
+
+    main.getRange(childIndex, 10).setValue(newVariation1);
+    fillDefaultValues(main, childIndex, amountMapValue);
+
+    main.getRange(childIndex, 17).setValue(itemAmount);
+    //main.getRange(childIndex, 19).setValue(noOfItem);
+    main.getRange(childIndex, 19).setValue(0);
+
+    main.getRange(childIndex, 23).setValue(brand);
+    main.getRange(childIndex, 24).setValue(colorName);
+    main.getRange(childIndex, 30).setValue("1" + " X " + replaceSplCharacter(itemTitle));//package content
+    main.getRange(childIndex, 31).setValue("sku.color_family=[\"" + newVariation1 + "\",]");
+    main.getRange(childIndex, 32).setValue("sku.size=[\"" + variationTwo + "\",]");
+    main.getRange(currentParentIndex, 31).setValue(main.getRange(currentParentIndex + 1, 31).getValue());
+    main.getRange(currentParentIndex, 32).setValue(main.getRange(currentParentIndex + 1, 32).getValue());
+    index++;
+  }
+}
+
+function replaceSplCharacter(value) {
+  return value.replace("â€œ", "“").replace("â€", "”").replace("â€˜", "‘").replace("â€™", "’").replace("â€”", "–").replace("â€“", "—").replace("â€¢", "-").replace("â€¦", "…").replace("Ã˜", "Ø").replace("Ã‚Â®", "®").replace("Â³", "³").replace("Â®", "®").replace("Ã¸", "Ÿ").replace("Ã‚", "Ÿ");
+}
+
+function fillDefaultValues(main, index, amountMapValue) {
+  if (amountMapValue != "" && amountMapValue != undefined) {
+    var salePrice = amountMapValue[4];
+    if (salePrice != "") {
+      main.getRange(index, 15).setValue("2024-05-10 00:00:00");
+      main.getRange(index, 16).setValue("2024-06-10 23:59:00");
+    }
+  }
+  main.getRange(index, 6).setValue("userTemplate-PH_PumaAccessories");
+  main.getRange(index, 18).setValue("PHP"); //Currency
+  main.getRange(index, 22).setValue("default");
+  main.getRange(index, 25).setValue("No Warranty");
+  main.getRange(index, 26).setValue("0.5");//package weight
+  main.getRange(index, 27).setValue("15");//package height
+  main.getRange(index, 28).setValue("12");//package length
+  main.getRange(index, 29).setValue("12");//package width
+}
+
+function getItemTitle(regionalDispalyName, brand, gender, activityGroup, articleType,searchColorName,productsDivision) {
+  var itemtitle;
+  var title;
+  var newRegionalDisplayName;
+  var itemTitle;
+  var getSearchColorName;
+  if (regionalDispalyName.includes("’s")) {
+    newRegionalDisplayName = regionalDispalyName.replace("’s", "'s™");
+  } else {
+    newRegionalDisplayName = regionalDispalyName;
+  }
+  if (searchColorName.includes(' - ')) {
+    getSearchColorName = searchColorName.split(' - ')[1];
+  }
+  if (regionalDispalyName.includes("Men") || regionalDispalyName.includes("Women")) {
+    title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType,"",getSearchColorName,productsDivision);
+    itemTitle = removeDuplicates(title);
+  } else {
+    title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender,getSearchColorName,productsDivision);
+    itemTitle = removeDuplicates(title);
+  }
+  return itemTitle;
+}
+
+function formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender,searchColorName,productsDivision) {
+  var title = "[NEW] ";
+  if (brand.includes("Licence")) {
+    var brandNameChanges= brand.replace("Licence", "PUMA")
+    title += brandNameChanges;
+  } else {
+  title += brand;
+  }
+  if (gender != undefined && title.indexOf(gender) == -1) {
+    // if (gender == "Male") {
+    //   gender = "Men's"
+    // } else if (gender == "Female") {
+    //   gender = "Women's"
+    // }
+    if (gender == "Unisex") {
+      title += " " + gender;
+    }
+  }
+  if (title.indexOf(newRegionalDisplayName) == -1) {
+    var checkRegionalDisplayName = "";
+    if (newRegionalDisplayName.includes("Trainers")) {
+      checkRegionalDisplayName = newRegionalDisplayName.replace("Trainers", "Shoes");
+      title += " " + checkRegionalDisplayName;
+    } else if (newRegionalDisplayName.includes("Sandals")) {
+      checkRegionalDisplayName = newRegionalDisplayName.replace("Sandals", "Sports Sandals");
+      title += " " + checkRegionalDisplayName;
+    } else if (newRegionalDisplayName.includes("Slides")) {
+      checkRegionalDisplayName = newRegionalDisplayName.replace("Slides", "Slides Slippers");
+      title += " " + checkRegionalDisplayName;
+    } else if (newRegionalDisplayName.includes("Trainer")) {
+      checkRegionalDisplayName = newRegionalDisplayName.replace("Trainer", "Shoes");
+      title += " " + checkRegionalDisplayName;
+    } else {
+      title += " " + newRegionalDisplayName;
+    }
+    
+  }
+
+  // if (title.indexOf(activityGroup) == -1) {
+  //   title += " " + activityGroup;
+  // }
+  // if (title.indexOf(articleType) == -1) {
+  //   title += " " + articleType;
+  // }
+  if (productsDivision == "Footwear") {
+    if (title.indexOf(searchColorName) == -1) {
+      title += " (" + searchColorName + ") ";
+    }
+   }
+ 
+  return title;
+}
+
+function countNoOfItems() {
+  //debugger;
+  var inputSheet = SpreadsheetApp.getActive().getSheetByName("Input"); 
+  var colorNumberValues =[];
+  var styleValues=[];
+  for (var i=2;i<=inputSheet.getLastRow();i++) {
+    var products = inputSheet.getRange(i, 14).getValue();
+    if (products == "Footwear") {
+    colorNumberValues.push(inputSheet.getRange(i ,9).getValue());
+  }
+   else {
+    styleValues.push (inputSheet.getRange(i,1).getValue()); 
+  } 
+  } 
+   var result = {};
+  colorNumberValues.forEach(function (x) {
+    result[x] = (result[x] || 0) + 1;
+  });
+
+  styleValues.forEach(function (x) {
+    result[x] = (result[x] || 0) + 1;
+  });
+
+   return result; 
+}
+
+function fillParentRow(main, inputSheet, index, i, categoryMap, amountMap, styleCountMap, childUpdateIndexMap) {
+  var customSku = inputSheet.getRange(i, 16).getValue();
+  var ageGroup = inputSheet.getRange(i, 4).getValue();
+  var articleGroup = inputSheet.getRange(i, 6).getValue();
+  var brand = inputSheet.getRange(i, 3).getValue();
+  var regionalDispalyName = inputSheet.getRange(i, 2).getValue();
+  var gender = inputSheet.getRange(i, 5).getValue();
+  var activityGroup = inputSheet.getRange(i, 8).getValue();
+  var articleType = inputSheet.getRange(i, 7).getValue();
+  var variation1 = inputSheet.getRange(i, 12).getValue();
+  var searchColorName = inputSheet.getRange(i, 13).getValue();
+  var longDescription = inputSheet.getRange(i, 25).getValue();
+  var collection = inputSheet.getRange(i, 26).getValue();
+  var material = inputSheet.getRange(i, 27).getValue();
+  var materialLocal = inputSheet.getRange(i, 28).getValue();
+  var upperMaterial = inputSheet.getRange(i, 29).getValue();
+  var midSoleMaterial = inputSheet.getRange(i, 30).getValue();
+  var outerSoleMaterial = inputSheet.getRange(i, 31).getValue();
+  var shellMaterial = inputSheet.getRange(i, 32).getValue();
+
+  var neck = inputSheet.getRange(i, 12).getValue();
+  var sleeves = inputSheet.getRange(i, 12).getValue();
+  var supportlevel = inputSheet.getRange(i, 12).getValue();
+  var toeType = inputSheet.getRange(i, 33).getValue();
+  var heelType = inputSheet.getRange(i, 34).getValue();
+  var fastener = inputSheet.getRange(i, 66).getValue();
+  var fit = inputSheet.getRange(i, 67).getValue();
+  var pumaTechnology = inputSheet.getRange(i, 35).getValue();
+  var technologyPurpose = inputSheet.getRange(i, 36).getValue();
+  var shortDescription = inputSheet.getRange(i, 24).getValue();
+  var care = inputSheet.getRange(i, 43).getValue();
+  var careLabel = inputSheet.getRange(i, 44).getValue();
+  var productsDivision = inputSheet.getRange(i, 14).getValue();
+
+  var itemTitle = getItemTitle(regionalDispalyName, brand, gender, activityGroup, articleType,searchColorName,productsDivision);
+  main.getRange(index, 5).setValue(replaceSplCharacter(itemTitle));
+  main.getRange(index, 30).setValue("1" + " X " + replaceSplCharacter(itemTitle));//package content
+
+  var mappedKey = ageGroup + '-' + gender + '-' + articleGroup + '-' + articleType + '-' + activityGroup;
+  var categoryMapValue = categoryMap[mappedKey];
+  var amountMapValue = amountMap[customSku];
+
+  if (amountMapValue != "" && amountMapValue != undefined) {
+    var itemAmount = amountMapValue[3];
+    main.getRange(index, 17).setValue(itemAmount);
+  }
+
+  //Recently added script upto line 90
+  var ean = inputSheet.getRange(i, 16).getValue();
+  var act_group = inputSheet.getRange(i, 8).getValue();
+  if (act_group == "Prime/Select") {
+    act_group = "Others";
+  } else if (act_group == "Sport Classics" || act_group == "Evolution" || act_group == "Basics" || act_group == "Kids" || act_group == "Auto") {
+    act_group = "Lifestyle";
+  }
+  var material = inputSheet.getRange(i, 27).getValue();
+  var val1 = "";
+  if (material.indexOf("100% polyester") != -1) {
+    val1 = 'normal.clothing_material=["Polyester",]';
+  } else if (material.indexOf("100% nylon") != -1) {
+    val1 = 'normal.clothing_material=["Nylon",]';
+  } else if (material.indexOf("100% cotton") != -1) {
+    val1 = 'normal.clothing_material=["Cotton",]';
+  } else if (material.indexOf("polyester") != -1 && material.indexOf("nylon") != -1) {
+    val1 = 'normal.clothing_material=["Polyester+Nylon",]';
+  } else if (material.indexOf("polyester") != -1 && material.indexOf("cotton") != -1) {
+    val1 = 'normal.clothing_material=["Polyester+Cotton",]';
+  } else if (material.indexOf("polyester") != -1 && material.indexOf("elastane") != -1) {
+    val1 = 'normal.clothing_material=["Polyester+Elasteane",]';
+  } else if (material.indexOf("polyester") != -1 && material.indexOf("spandex") != -1) {
+    val1 = 'normal.clothing_material=["Polyester+Spandex",]';
+  }
+  var itemSpecIndex = 33;
+  main.getRange(index, itemSpecIndex).setValue('normal.activity_type=["' + act_group + '",]');
+  if (val1 != "") {
+    itemSpecIndex++;
+    main.getRange(index, itemSpecIndex).setValue(val1);
+  }
+  itemSpecIndex++;
+  main.getRange(index, itemSpecIndex).setValue('normal.delivery_option_economy=["No",]');
+  if (articleGroup != undefined && articleGroup != "") {
+    if (articleGroup.toLowerCase() == "tops") {
+      var tops_type = "";
+      if (articleType == "Tee") {
+        tops_type = "T-Shirts";
+      } else if (articleType == "Polo") {
+        tops_type = "Polo";
+      }
+      if (tops_type != "") {
+        itemSpecIndex++;
+        main.getRange(index, itemSpecIndex).setValue('normal.tops_type=["' + tops_type + '",]');
+      }
+    }
+  }
+
+  if (categoryMapValue != undefined && categoryMapValue.length > 0) {
+    main.getRange(index, 21).setValue(categoryMapValue[1]);
+  } else {
+    main.getRange(index, 21).setValue("error");
+  }
+  var style = "";
+   if (productsDivision == "Footwear") {
+      style = inputSheet.getRange(i, 9).getValue();
+   } else {
+      style = inputSheet.getRange(i, 1).getValue();
+   }
+ 
+  var shortDescrition = getShortDescription(shortDescription, brand, searchColorName, gender, activityGroup, collection, material, materialLocal, upperMaterial,
+    midSoleMaterial, outerSoleMaterial, shellMaterial, toeType,
+    heelType, fastener, fit, pumaTechnology, technologyPurpose, inputSheet, index, style);
+
+  var styleCount = styleCountMap[style];
+  var parentQuantity = sortChildIndexBasedOnSize(childUpdateIndexMap, styleCount, i, index);
+
+  fillDefaultValues(main, index, amountMapValue);
+  var templateAttributeValueList = getTemplateAttribute1();
+  var sizeChartKey = ageGroup + "-" + gender + "-" + articleGroup + "-" + articleType;
+  var templateAttributeValue = templateAttributeValueList[sizeChartKey];
+  var templateAttribute1 = "";
+  var templateAttribute4 = "";
+  var templateAttribute5 = "";
+  if (templateAttributeValue != "" && templateAttributeValue != undefined) {
+    templateAttribute1 = templateAttributeValue[1];
+  }
+  if (care != "" && care != undefined) {
+    templateAttribute4 += "<p><strong>Care:</strong>" + care + "<p>";
+  }
+  if (careLabel != "" && careLabel != undefined) {
+    templateAttribute4 += "<p><strong>Care Label:</strong>" + careLabel + "<p>";
+  }
+
+  fillTempateAttributes(main, templateAttribute1, templateAttribute4, templateAttribute5, index, longDescription);
+  //main.getRange(index, 19).setValue(parentQuantity);
+  main.getRange(index, 19).setValue(0);
+  if (styleCountMap[style] > 1) {
+    //fill only for parent
+    main.getRange(index, 4).setValue(style);
+    main.getRange(index, 9).setValue(styleCount);
+    main.getRange(index, 10).setValue("color_family");
+    main.getRange(index, 11).setValue("size");
+  } else {
+    main.getRange(index, 4).setValue(customSku);
+  }
+  main.getRange(index, 13).setValue("<ul>" + replaceSplCharacter(shortDescrition) + "</ul>");
+  main.getRange(index, 23).setValue(brand);
+  main.getRange(index, 24).setValue(style);
+  //getNumberOfItem(style,inputSheet);
+}
+
+function sortChildIndexBasedOnSize(childUpdateIndexMap, styleCount, j, index) {
+  var inputSheet = SpreadsheetApp.getActive().getSheetByName("Input");
+  var childEndIndex = j + styleCount - 1;
+  var sizeValues = inputSheet.getRange("L" + j + ":V" + childEndIndex).getValues();
+  var tempArray = [];
+  var childArray = [];
+  var colourArray = [];
+  var colourValueCountMap = {};
+  var availableSizeValues = {};
+  var customSKUArray = [];
+  var parentQuantity = 0;
+  for (var i = 0; i < sizeValues.length; i++) {
+    var value1 = sizeValues[i];
+    var sizeValue = variation2(i + j).replace("UK:", "").replace("FR:", "").replace("US:", "").replace("ASIA:", "").replace("Int:", "").replace(" yrs", "Y");
+    //baskar - changing
+    //Logger.log("checking sizeValue 1 : " + sizeValue);
+    if (sizeValue.indexOf(" L") != -1) {
+      sizeValue = sizeValue.replace("Int:W", "").replace("Int:", "").replace("W", "").replace(" L", "/");
+    }
+    //Logger.log("checking sizeValue 2 : " + sizeValue);
+    var customSKU = value1[4];
+    var colour = value1[0];
+    parentQuantity += value1[5];
+    customSKUArray.push(customSKU);
+    if (tempArray.indexOf(sizeValue) == -1) {
+      tempArray.push(sizeValue);
+    }
+    childArray.push(sizeValue);
+    //    Logger.log("variant", variation2(i+j).replace("UK:", "").replace("FR:", "").replace("US:", "").replace("ASIA:", "").replace("Int:","").replace(" yrs", "Y"));
+    var count = 1;
+    if (colourValueCountMap[colour] != undefined) {
+      count = colourValueCountMap[colour] + 1;
+    }
+    availableSizeValues[sizeValue] = "1";
+    colourArray.push(colour);
+    colourValueCountMap[colour] = count;
+  }
+  var sortByStringValue = false;
+  if (childArray.indexOf("3XS") != -1 || childArray.indexOf("XXXS") != -1 || childArray.indexOf("XXS") != -1 || childArray.indexOf("XS") != -1
+    || childArray.indexOf("S") != -1 || childArray.indexOf("S/M") != -1 || childArray.indexOf("M") != -1 || childArray.indexOf("M/L") != -1
+    || childArray.indexOf("L") != -1 || childArray.indexOf("L/XL") != -1 || childArray.indexOf("XL") != -1 || childArray.indexOf("XXL") != -1
+    || childArray.indexOf("XXXL") != -1 || childArray.indexOf("3XL") != -1 || childArray.indexOf("4XL") != -1 || childArray.indexOf("5XL") != -1
+    || childArray.indexOf("6XL") != -1 || childArray.indexOf("1-2Y") != -1 || childArray.indexOf("2-3Y") != -1 || childArray.indexOf("3-4Y") != -1
+    || childArray.indexOf("4-5Y") != -1 || childArray.indexOf("5-6Y") != -1 || childArray.indexOf("6-7Y") != -1
+    || childArray.indexOf("7-8Y") != -1 || childArray.indexOf("8-9Y") != -1 || childArray.indexOf("9-10Y") != -1
+    || childArray.indexOf("10-11Y") != -1 || childArray.indexOf("11-12Y") != -1 || childArray.indexOf("12-13Y") != -1
+    || childArray.indexOf("13-14Y") != -1 || childArray.indexOf("14-15Y") != -1 || childArray.indexOf("15-16Y") != -1
+    || childArray.indexOf("6Y") != -1 || childArray.indexOf("8Y") != -1 || childArray.indexOf("10Y") != -1
+    || childArray.indexOf("12Y") != -1 || childArray.indexOf("14Y") != -1 || childArray.indexOf("16Y") != -1
+    || childArray.indexOf("18Y") != -1 || childArray.indexOf("20Y") != -1 || childArray.indexOf("OSFA") != -1 || childArray.indexOf("One size") != -1
+    || childArray.indexOf("UA") != -1 || childArray.indexOf("Mini") != -1
+    || childArray.indexOf("Kids") != -1 || childArray.indexOf("Adult") != -1 || childArray.indexOf("Youth") != -1) {
+    sortByStringValue = true;
+  }
+  if (sortByStringValue) {
+    sortByStringValues(childArray, tempArray, customSKUArray, childUpdateIndexMap, colourArray, colourValueCountMap, availableSizeValues);
+  } else {
+    tempArray.sort(function (a, b) {
+      if (isNaN(a) && isNaN(b)) {
+        return a.localeCompare(b)
+      } else {
+        return a - b
+      }
+    });
+    sortByIntValues(childArray, tempArray, customSKUArray, childUpdateIndexMap, colourArray, colourValueCountMap);
+  }
+  return parentQuantity;
+}
+
+function sortByIntValues(childArray, tempArray, customSKUArray, childUpdateIndexMap, colourArray, colourValueCountMap) {
+  var colourSizeMap = [];
+  var availableColour = [];
+  for (var i = 0; i < childArray.length; i++) {
+    var size = childArray[i];
+    var colour = colourArray[i];
+    if (availableColour.indexOf(colour) == -1) {
+      availableColour.push(colour);
+    }
+    colourSizeMap.push(colour + "_" + size);
+  }
+  var loopSize = tempArray;
+  var colourCount = 0;
+  for (var i = 0; i < availableColour.length; i++) {
+    var colour = availableColour[i];
+    for (var j = 0; j < loopSize.length; j++) {
+      var size = loopSize[j];
+      var key = colour + "_" + size;
+      if (colourSizeMap.indexOf(key) != -1) {
+        childUpdateIndexMap[key] = colourCount;
+        colourCount++;
+      }
+    }
+  }
+}
+
+function sortByStringValues(childArray, tempArray, customSKUArray, childUpdateIndexMap, colourArray, colourValueCountMap, availableSizeValues) {
+  var colourSizeMap = [];
+  var availableColour = [];
+  for (var i = 0; i < childArray.length; i++) {
+    var size = childArray[i];
+    var colour = colourArray[i];
+    if (availableColour.indexOf(colour) == -1) {
+      availableColour.push(colour);
+    }
+    colourSizeMap.push(colour + "_" + size);
+  }
+  var loopSize = ["3XS", "XXXS", "XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL", "XL", "XXL", "XXXL", "3XL", "4XL", "5XL", "6XL", "1-2Y", "2-3Y", "3-4Y", "4-5Y", "5-6Y", "6-7Y", "7-8Y", "8-9Y", "9-10Y", "10-11Y", "11-12Y", "12-13Y", "13-14Y", "14-15Y", "15-16Y", "16-17Y", "17-18Y", "18-19Y", "19-20Y", "6Y", "8Y", "10Y", "12Y", "14Y", "16Y", "18Y", "20Y", "OSFA", "One size", "UA", "Mini", "Kids", "Adult", "Youth"];
+  var colourCount = 0;
+  for (var i = 0; i < availableColour.length; i++) {
+    var colour = availableColour[i];
+    for (var j = 0; j < loopSize.length; j++) {
+      var size = loopSize[j];
+      var key = colour + "_" + size;
+      if (colourSizeMap.indexOf(key) != -1) {
+        childUpdateIndexMap[key] = colourCount;
+        colourCount++;
+      }
+    }
+  }
+}
+
+function getTemplateAttribute1() {
+  var sizeChartMap = new Object();
+  var sizeChartSheet = SpreadsheetApp.getActive().getSheetByName("Size chart");
+  var values = sizeChartSheet.getRange("A2:B" + sizeChartSheet.getLastRow()).getValues();
+  //var mappedKey = ageGroup+ "-"+gender+"-"+articleGroup+ "-"+articleType+ "-"+activityGroup;
+  //var mappedKey = "Adults - Unisex - Undefined - Low Boot - Indoor"
+  for (var i = 0; i < values.length; i++) {
+    var sizeChartObj = values[i];
+    var mappedKey = sizeChartObj[0];
+    sizeChartMap[mappedKey] = sizeChartObj;
+  }
+  return sizeChartMap;
+}
+
+function removeDuplicates(title) {
+  var str = title.split(" ");
+  var result = [];
+  for (var i = 0; i < str.length; i++) {
+    if (result.indexOf(str[i]) === -1) {
+      result.push(str[i]);
+    }
+  }
+  return result.join(" ");
+}
+
+function getShortDescription(shortDescription, brand, searchColorName, gender, activityGroup, collection, material, materialLocal, upperMaterial,
+  midSoleMaterial, outerSoleMaterial, shellMaterial, toeType,
+  heelType, fastener, fit, pumaTechnology, technologyPurpose, inputSheet, index, style) {
+  var shortDesc = shortDescription;
+  if (brand != "" && brand != undefined) {
+    shortDesc += "<li>Brand : " + brand + "</li>";
+  }
+  if (searchColorName != "" && searchColorName != undefined) {
+    shortDesc += "<li>Color Name : " + searchColorName + "</li>";
+  }
+  if (gender != "" && gender != undefined) {
+    shortDesc += "<li>Gender : " + gender + "</li>";
+  }
+  if (activityGroup != "" && activityGroup != undefined) {
+    shortDesc += "<li>Activity Group : " + activityGroup + "</li>";
+  }
+  if (collection != "" && collection != undefined) {
+    shortDesc += "<li>Collection : " + collection + "</li>";
+  }
+  if (material != "" && material != undefined && material != "Other") {
+    var newMaterial = "<li>Material : " + material + "</li>";
+    var main_material_2_present = false;
+    if (newMaterial.indexOf("Main Material 1") != -1) {
+      newMaterial = newMaterial.replace("<li>Material : ", "<li>");
+    }
+    if (newMaterial.indexOf("Main Material 2") != -1) {
+      main_material_2_present = true;
+      newMaterial = newMaterial.replace("<li>Material : ", "<li>");
+      newMaterial = newMaterial.replace("Main Material 2", "</li><li>Main Material 2");
+    }
+    if (newMaterial.indexOf("Main Material 3") != -1) {
+      newMaterial = newMaterial.replace("<li>Material : ", "<li>");
+      if (!main_material_2_present) {
+        newMaterial = newMaterial.replace("Main Material 3", "</li><li>Main Material 2");
+      } else {
+        newMaterial = newMaterial.replace("Main Material 3", "</li><li>Main Material 3");
+      }
+    }
+    shortDesc += newMaterial;
+  }
+  if (materialLocal != "" && materialLocal != undefined && materialLocal != "Other") {
+    shortDesc += "<li>Material Local : " + materialLocal + "</li>";
+  }
+  if (upperMaterial != "" && upperMaterial != undefined && upperMaterial != "Other") {
+    shortDesc += "<li>Upper Material : " + upperMaterial + "</li>";
+  }
+  if (midSoleMaterial != "" && midSoleMaterial != undefined && midSoleMaterial != "Other") {
+    shortDesc += "<li>Mid Sole Material : " + midSoleMaterial + "</li>";
+  }
+  if (outerSoleMaterial != "" && outerSoleMaterial != undefined && outerSoleMaterial != "Other") {
+    shortDesc += "<li>Outer Sole Material : " + outerSoleMaterial + "</li>";
+  }
+  if (shellMaterial != "" && shellMaterial != undefined && shellMaterial != "Other") {
+    shortDesc += "<li>Shell Material : " + shellMaterial + "</li>";
+  }
+  if (toeType != "" && toeType != undefined) {
+    shortDesc += "<li>Toe Type : " + toeType + "</li>";
+  }
+  if (heelType != "" && heelType != undefined) {
+    shortDesc += "<li>Heel Type : " + heelType + "</li>";
+  }
+  if (fastener != "" && fastener != undefined) {
+    shortDesc += "<li>Fastener : " + fastener + "</li>";
+  }
+  if (fit != "" && fit != undefined) {
+    shortDesc += "<li>Fit : " + fit + "</li>";
+  }
+  if (pumaTechnology != "" && pumaTechnology != undefined) {
+    shortDesc += "<li>PUMA Technology : " + pumaTechnology + "</li>";
+  }
+  if (technologyPurpose != "" && technologyPurpose != undefined) {
+    shortDesc += "<li>Technology Purpose : " + technologyPurpose + "</li>";
+  }
+  if (style != undefined && style != "") {
+    shortDesc += "<li>Style Number : " + style + "</li>";
+  }
+  return shortDesc;
+}
+
+function capitalizeFirstLetters(str) {
+  var strVal = '';
+  str = str.split(' ');
+  for (var chr = 0; chr < str.length; chr++) {
+    strVal += str[chr].substring(0, 1).toUpperCase() + str[chr].substring(1, str[chr].length) + ' '
+  }
+  return strVal;
+}
+
+function fillTempateAttributes(main, templateAttribute1, templateAttribute4, templateAttribute5, index, longDescription) {
+  var templateAttribute2 = "";
+  var templateAttribute3 = "";
+  if (longDescription.includes("FEATURES")) {
+    templateAttribute2 = longDescription.substring(longDescription.indexOf("<p>"), longDescription.indexOf("FEATURES"));
+    templateAttribute3 = longDescription.substring(longDescription.indexOf("FEATURES"));
+  } else {
+    if (longDescription.includes("DETAILS")) {
+      templateAttribute2 = longDescription.substring(longDescription.indexOf("<p>"), longDescription.indexOf("DETAILS"));
+      templateAttribute3 = longDescription.substring(longDescription.indexOf("DETAILS"));
+    } else {
+      templateAttribute2 = longDescription.substring(longDescription.indexOf("<p>"));
+    }
+  }
+  //templateAttribute1 = capitalizeFirstLetters(templateAttribute1);
+  main.getRange(index, 56).setValue("sizechart=" + templateAttribute1);
+  if (templateAttribute2 != "") {
+    main.getRange(index, 57).setValue("description=" + replaceSplCharacter(templateAttribute2).replace("<h3>", ""));
+  }
+  if (templateAttribute3 != "") {
+    main.getRange(index, 58).setValue("productstory=<h3>" + replaceSplCharacter(templateAttribute3));
+  }
+  if (templateAttribute4 != "") {
+    main.getRange(index, 59).setValue("care=" + replaceSplCharacter(templateAttribute4));
+  }
+  //   if(templateAttribute5!=""){
+  //    main.getRange(index, 60).setValue("care label="+ templateAttribute5);
+  //  }
+
+}
+
+function variation2(i) {
+  var main = SpreadsheetApp.getActive().getSheetByName("main");
+  var inputSheet = SpreadsheetApp.getActive().getSheetByName("Input");
+  var productDivision = inputSheet.getRange(i, 14).getValue();
+  var sizeUK = inputSheet.getRange(i, 22).getValue();
+  var sizeFR = inputSheet.getRange(i, 21).getValue();
+  var sizeAsia = inputSheet.getRange(i, 23).getValue();
+  var sizeUS = inputSheet.getRange(i, 20).getValue();
+  var variation2;
+
+  if (productDivision == "Footwear") {
+    if (sizeUK != "") {
+      if (isNaN(sizeUK)) {
+        variation2 = "Int:" + sizeUK;
+      } else {
+        variation2 = "UK:" + sizeUK;
+      }
+    } else {
+      if (isNaN(sizeFR)) {
+        variation2 = "Int:" + sizeFR;
+      } else {
+        variation2 = "US:" + sizeFR;
+      }
+    }
+  }
+  if (productDivision == "Apparel") {
+    if (sizeUK != "") {
+      if (isNaN(sizeUK)) {
+        variation2 = "Int:" + sizeUK;
+      } else {
+        variation2 = "UK:" + sizeUK;
+      }
+    } else if (sizeUK == "" && sizeUS != "") {
+      if (isNaN(sizeUS)) {
+        variation2 = "Int:" + sizeUS;
+      } else {
+        variation2 = "US:" + sizeUS;
+      }
+    } else {
+      if (isNaN(sizeAsia)) {
+        variation2 = "Int:" + sizeAsia;
+      } else {
+        variation2 = "ASIA:" + sizeAsia;
+      }
+    }
+  }
+  if (productDivision == "Accessories") {
+    if (sizeUK != "") {
+      if (isNaN(sizeUK)) {
+        variation2 = "Int:" + sizeUK;
+      } else {
+        variation2 = "UK:" + sizeUK;
+      }
+    } else {
+      if (isNaN(sizeUS)) {
+        variation2 = "Int:" + sizeUS;
+      } else {
+        variation2 = "US:" + sizeUS;
+      }
+    }
+
+  }
+
+  if (productDivision == "Socks") {
+    if (sizeUK != "") {
+      if (isNaN(sizeUK)) {
+        variation2 = "Int:" + sizeUK;
+      } else {
+        variation2 = "UK:" + sizeUK;
+      }
+    } else {
+      if (isNaN(sizeFR)) {
+        variation2 = "Int:" + sizeFR;
+      } else {
+        variation2 = "US:" + sizeFR;
+      }
+    }
+
+  }
 
 
-def construct_amount_map(price_ws):
-    amount_map = {}
-    for r in range(2, price_ws.max_row + 1):
-        custom_sku = val(price_ws, r, 3)
-        if custom_sku:
-            amount_map[s(custom_sku).strip()] = [val(price_ws, r, c) for c in range(1, 6)]
-    return amount_map
+  if (variation2.includes("/")) {
+    if (variation2.includes("S/M") || variation2.includes("M/L") || variation2.includes("L/XL")) {
+      return variation2;
+    } else {
+      return variation2.replace("Int:", "Int:W").replace("/", " L");
+    }
+  } else if (variation2.includes("OSFA") || variation2.includes("Mini") || variation2.includes("Kids") || variation2.includes("Youth") || variation2.includes("Adult") || variation2.includes("UA")) {
+    if (variation2.includes("OSFA")) {
+      return "Int:One size";
+    }
+    if (variation2.includes("Mini")) {
+      return "Int:XS";
+    }
+    if (variation2.includes("Kids")) {
+      return "Int:S";
+    }
+    if (variation2.includes("Youth")) {
+      return "Int:M";
+    }
+    if (variation2.includes("Adult")) {
+      return "Int:L";
+    }
+    if (variation2.includes("UA")) {
+      return "Int:UA";
+    }
+  } else {
+    if (variation2.includes("Youth")) {
+      return variation2;
+    } else {
+      return variation2.replace("Y", " yrs");
+    }
+  }
+}
 
+function constructAmountMap() {
+  //debugger;
+  var amountMap = new Object();
+  var priceSheet = SpreadsheetApp.getActive().getSheetByName("Price Sheet");
+  var values = priceSheet.getRange("A2:E" + priceSheet.getLastRow()).getValues();
+  for (var i = 0; i < values.length; i++) {
+    var priceObj = values[i];
+    var customSKU = priceObj[2];
+    //    var colorName = priceObj[8];
+    amountMap[customSKU] = priceObj;
+  }
+  return amountMap;
+}
 
-def construct_category_map(category_ws):
-    category_map = {}
-    for r in range(2, category_ws.max_row + 1):
-        key = val(category_ws, r, 1)
-        if key:
-            category_map[s(key).strip()] = [val(category_ws, r, c) for c in range(1, 4)]
-    return category_map
+function constructQuantityMap() {
+  var quantitytMap = new Object();
+  var quantitySheet = SpreadsheetApp.getActive().getSheetByName("Stock sheet");
+  var values = quantitySheet.getRange("A2:B" + quantitySheet.getLastRow()).getValues();
+  for (var i = 0; i < values.length; i++) {
+    var quantityObj = values[i];
+    var customSKU = quantityObj[0];
+    quantitytMap[customSKU] = quantityObj;
+  }
+  return quantitytMap;
+}
 
+function constructCategoryMap() {
+  //debugger;
+  var categoryMap = new Object();
+  var inputSheet = SpreadsheetApp.getActive().getSheetByName("Input");
+  var categorySheet = SpreadsheetApp.getActive().getSheetByName("Category sheet");
+  var values = categorySheet.getRange("A2:C" + categorySheet.getLastRow()).getValues();
+  for (var i = 0; i < values.length; i++) {
+    var categoryObj = values[i];
+    var categoryName = categoryObj[0];
+    categoryMap[categoryName] = categoryObj;
+  }
+  return categoryMap
+}
 
-def get_template_attribute1(size_chart_ws):
-    size_chart_map = {}
-    for r in range(2, size_chart_ws.max_row + 1):
-        key = val(size_chart_ws, r, 1)
-        if key:
-            size_chart_map[s(key).strip()] = [val(size_chart_ws, r, c) for c in range(1, 3)]
-    return size_chart_map
-
-
-def get_parent_key(input_ws, row_idx, products_division):
-    if products_division in ["Apparel", "Accessories"]:
-        return val(input_ws, row_idx, 1)
-    elif products_division == "Footwear":
-        return val(input_ws, row_idx, 9)
-    return val(input_ws, row_idx, 1)
-
-
-def _normalize_sheet_name(name):
-    return "".join(name.split()).lower()
-
-
-def find_sheet(wb, expected_name, required=True):
-    if expected_name in wb.sheetnames:
-        return wb[expected_name]
-    target = _normalize_sheet_name(expected_name)
-    for name in wb.sheetnames:
-        if _normalize_sheet_name(name) == target:
-            return wb[name]
-    if required:
-        raise ConversionError(f"Could not find sheet '{expected_name}'. Available sheets: {wb.sheetnames}")
-    return None
-
-
-def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None,
-                   currency_code="PHP", price_col_setting="D", keep_debug_writes=False,
-                   progress_callback=None, custom_headings=None):
-    amount_map = construct_amount_map(price_ws)
-    category_map = construct_category_map(category_ws)
-    size_chart_map = get_template_attribute1(size_chart_ws)
-    price_col_idx = parse_column_setting(input_ws, price_col_setting)
-
-    # Group rows by Parent Key
-    groups = {}
-    for r in range(2, input_ws.max_row + 1):
-        division = val(input_ws, r, 14)
-        parent_id = get_parent_key(input_ws, r, division)
-        if not parent_id:
-            parent_id = f"UNKNOWN_{r}"
-        groups.setdefault(parent_id, []).append(r)
-
-    main = OutputSheet()
-    create_heading_for_target_sheet(main, custom_headings)
-
-    current_out_row = 2
-    total_parents = len(groups)
-    p_counter = 0
-
-    for parent_id, row_indices in groups.items():
-        p_counter += 1
-        if progress_callback:
-            progress_callback(p_counter, total_parents)
-
-        first_idx = row_indices[0]
-
-        products_division = val(input_ws, first_idx, 14)
-        brand = val(input_ws, first_idx, 3)
-        regional_display_name = val(input_ws, first_idx, 2)
-        gender = val(input_ws, first_idx, 5)
-        activity_group = val(input_ws, first_idx, 8)
-        article_type = val(input_ws, first_idx, 7)
-        search_color_name = val(input_ws, first_idx, 13)
-        age_group = val(input_ws, first_idx, 4)
-        article_group = val(input_ws, first_idx, 6)
-        long_description = val(input_ws, first_idx, 25)
-        care_instruction = val(input_ws, first_idx, 43)
-
-        # Uses newly integrated getItemTitle function
-        item_title = getItemTitle(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division)
-        mapped_key = f"{age_group}-{gender}-{article_group}-{article_type}-{activity_group}"
-        cat_val = category_map.get(mapped_key)
-        cat_id = cat_val[1] if (cat_val and len(cat_val) > 1) else ""
-
-        size_chart_key = f"{age_group}-{gender}-{article_group}-{article_type}"
-        size_chart_val = size_chart_map.get(size_chart_key)
-        size_chart_attr = ("sizechart=" + s(size_chart_val[1])) if (size_chart_val and len(size_chart_val) > 1) else ""
-
-        parent_rrp = val(input_ws, first_idx, price_col_idx)
-        short_desc = build_short_description(input_ws, first_idx)
-
-        desc_attr = f"description={replace_spl_character(long_description)}" if long_description else ""
-        care_attr = f"care={replace_spl_character(care_instruction)}" if care_instruction else ""
-
-        # -------------------------------------------------------------------
-        # 1. WRITE PARENT ROW
-        # -------------------------------------------------------------------
-        main.set_value(current_out_row, 1, parent_id)                              # SKU (Parent ID)
-        main.set_value(current_out_row, 4, parent_id)                              # customSKU (Parent SKU)
-        main.set_value(current_out_row, 5, replace_spl_character(item_title))     # itemTitle
-        main.set_value(current_out_row, 9, len(row_indices))                       # noOfVariants
-        main.set_value(current_out_row, 10, "color_family")                        # variation1
-        main.set_value(current_out_row, 11, "size")                                # variation2
-        main.set_value(current_out_row, 13, replace_spl_character(short_desc))    # shortDescription
-        main.set_value(current_out_row, 17, parent_rrp)                            # itemAmount
-        main.set_value(current_out_row, 18, currency_code)                         # currencyCode
-        main.set_value(current_out_row, 21, cat_id)                                # categoryID
-        main.set_value(current_out_row, 23, brand)                                 # brand
-        main.set_value(current_out_row, 30, f"1 X {replace_spl_character(item_title)}") # packageContent
-        
-        if size_chart_attr:
-            main.set_value(current_out_row, 56, size_chart_attr)                   # templateAttribute1
-        if desc_attr:
-            main.set_value(current_out_row, 57, desc_attr)                          # templateAttribute2
-        if care_attr:
-            main.set_value(current_out_row, 59, care_attr)                          # templateAttribute4
-
-        current_out_row += 1
-
-        # -------------------------------------------------------------------
-        # 2. SORT AND WRITE CHILD VARIANT ROWS
-        # -------------------------------------------------------------------
-        sorted_row_indices = sorted(
-            row_indices,
-            key=lambda idx: size_sort_key(get_variation2_size(input_ws, idx))
-        )
-
-        for r_idx in sorted_row_indices:
-            custom_sku = s(val(input_ws, r_idx, 16)).strip()                       # customSKU
-            variant_rrp = val(input_ws, r_idx, price_col_idx)                      # itemAmount
-            
-            # Color Name (Col 9) as primary, search_color_name as fallback
-            color_name = val(input_ws, r_idx, 9)
-            if not color_name:
-                color_name = val(input_ws, r_idx, 13)
-
-            size_uk_val = get_variation2_size(input_ws, r_idx)                    # variation2 (Sorted Size)
-
-            amt_val = amount_map.get(custom_sku) if custom_sku else None
-            if variant_rrp == "" and amt_val:
-                variant_rrp = amt_val[3]
-
-            sale_price = amt_val[4] if (amt_val and len(amt_val) > 4) else ""
-
-            main.set_value(current_out_row, 1, parent_id)                          # SKU
-            main.set_value(current_out_row, 4, custom_sku)                         # customSKU
-            main.set_value(current_out_row, 5, replace_spl_character(item_title))     # itemTitle
-            main.set_value(current_out_row, 10, color_name)                        # variation1 (Color Name)
-            main.set_value(current_out_row, 11, size_uk_val)                       # variation2 (Size UK)
-            main.set_value(current_out_row, 13, replace_spl_character(short_desc))    # shortDescription
-            main.set_value(current_out_row, 14, sale_price)                        # salePrice
-            main.set_value(current_out_row, 17, variant_rrp)                       # itemAmount
-            main.set_value(current_out_row, 18, currency_code)                     # currencyCode
-            main.set_value(current_out_row, 21, cat_id)                            # categoryID
-            main.set_value(current_out_row, 23, brand)                             # brand
-            main.set_value(current_out_row, 30, f"1 X {replace_spl_character(item_title)}") # packageContent
-            
-            if size_chart_attr:
-                main.set_value(current_out_row, 56, size_chart_attr)              # templateAttribute1
-            if desc_attr:
-                main.set_value(current_out_row, 57, desc_attr)                  # templateAttribute2
-            if care_attr:
-                main.set_value(current_out_row, 59, care_attr)                  # templateAttribute4
-
-            current_out_row += 1
-
-    return main
-
-
-def build_output_workbook(input_bytes, price_bytes=None, category_bytes=None,
-                          size_chart_bytes=None, sample_output_bytes=None,
-                          currency_code="PHP", price_col_setting="D",
-                          keep_debug_writes=False, progress_callback=None):
-    try:
-        wb = load_workbook(io.BytesIO(input_bytes), data_only=True)
-    except Exception as e:
-        raise ConversionError(f"Could not open main input workbook: {e}")
-
-    input_ws = find_sheet(wb, "Input")
-
-    def get_target_ws(file_bytes, sheet_name):
-        if file_bytes:
-            temp_wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
-            return temp_wb.active
-        return find_sheet(wb, sheet_name, required=False)
-
-    price_ws = get_target_ws(price_bytes, "Price Sheet")
-    category_ws = get_target_ws(category_bytes, "Category sheet")
-    size_chart_ws = get_target_ws(size_chart_bytes, "Size chart")
-    stock_ws = find_sheet(wb, "Stock sheet", required=False)
-
-    if not price_ws:
-        raise ConversionError("Price Sheet missing from main file and no standalone upload provided.")
-    if not category_ws:
-        raise ConversionError("Category Sheet missing from main file and no standalone upload provided.")
-    if not size_chart_ws:
-        raise ConversionError("Size Chart Sheet missing from main file and no standalone upload provided.")
-
-    custom_headings = None
-    if sample_output_bytes:
-        sample_wb = load_workbook(io.BytesIO(sample_output_bytes), data_only=True)
-        sample_ws = sample_wb.active
-        custom_headings = [val(sample_ws, 1, c) for c in range(1, sample_ws.max_column + 1) if val(sample_ws, 1, c) != ""]
-
-    output = run_conversion(
-        input_ws, price_ws, category_ws, size_chart_ws,
-        stock_ws=stock_ws, currency_code=currency_code,
-        price_col_setting=price_col_setting,
-        keep_debug_writes=keep_debug_writes,
-        progress_callback=progress_callback,
-        custom_headings=custom_headings
-    )
-
-    out_wb = output.to_workbook()
-    buf = io.BytesIO()
-    out_wb.save(buf)
-    buf.seek(0)
-    return buf.read()
+function createHeadingForTargetSheet(target) {
+  var headings = ["SKU", "status", "errorDetails", "customSKU", "itemTitle", "itemDescription1", "itemDescription2", "itemDescription3", "noOfVariants", "variation1", "variation2", "variation3", "shortDescription", "salePrice", "saleStartDate", "saleEndDate", "itemAmount", "currencyCode", "noOfItem", "imageURI", "categoryID", "taxClass", "brand", "model", "warrantyType", "packageWeight(kg)", "packageHeight(cm)", "packageLength(cm)", "packageWidth(cm)", "packageContent", "itemSpecifics1", "itemSpecifics2", "itemSpecifics3", "itemSpecifics4", "itemSpecifics5", "itemSpecifics6", "itemSpecifics7", "itemSpecifics8", "itemSpecifics9", "itemSpecifics10", "itemSpecifics11", "itemSpecifics12", "itemSpecifics13", "itemSpecifics14", "itemSpecifics15", "itemSpecifics16", "itemSpecifics17", "itemSpecifics18", "itemSpecifics19", "itemSpecifics20", "itemSpecifics21", "itemSpecifics22", "itemSpecifics23", "itemSpecifics24", "itemSpecifics25", "templateAttribute1", "templateAttribute2", "templateAttribute3", "templateAttribute4", "templateAttribute5", "postAsNonVariant"];
+  for (var i = 0; i < headings.length; i++) {
+    target.getRange(1, i + 1).setValue(headings[i]);
+  }
+}
