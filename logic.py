@@ -1,9 +1,9 @@
 """
 Logic module for Product Feed Generator / Zecom Tracker processing.
-- Preserves original structure while fixing column mapping bugs.
-- Handles empty/missing Graas SKU gracefully.
-- Parent Row: variation1 = "color_family", variation2 = "size", noOfVariants = count.
-- Variant Row: variation1 = Color Name (Col 9), variation2 = Size UK (Col 22).
+- Includes exact JavaScript logic translation for getItemTitle and formTitle.
+- Sets Parent Row variation1 = "color_family" and variation2 = "size".
+- Sets Variant Row variation1 = Color Name (Col 9) and variation2 = Size UK (Col 22).
+- Handles missing/empty SKUs safely.
 - Sorts child variants sequentially by size order (Alpha/Numeric).
 """
 
@@ -53,10 +53,6 @@ def val(ws, row, col):
 
 def s(v):
     return "" if v is None else str(v)
-
-
-def replace_first(text, old, new):
-    return s(text).replace(old, new, 1)
 
 
 def is_not_number(v):
@@ -128,11 +124,11 @@ def replace_spl_character(value):
         ("Ã˜", "\u00d8"), ("Ã‚Â®", "\u00ae"), ("Â³", "\u00b3"), ("Â®", "\u00ae"),
     ]
     for old, new in pairs:
-        value = replace_first(value, old, new)
+        value = value.replace(old, new, 1)
     return value
 
 
-def remove_duplicates(title):
+def removeDuplicates(title):
     parts = s(title).split(" ")
     result = []
     for p in parts:
@@ -141,40 +137,74 @@ def remove_duplicates(title):
     return " ".join(result)
 
 
-def form_title(brand, new_regional_display_name, activity_group, article_type, gender, search_color_name, products_division):
-    brand, new_regional_display_name, search_color_name = s(brand), s(new_regional_display_name), s(search_color_name)
-    title = "[NEW] " + (replace_first(brand, "Licence", "PUMA") if "Licence" in brand else brand)
+# -------------------------------------------------------------------
+# EXACT CODE TRANSLATION FOR formTitle & getItemTitle
+# -------------------------------------------------------------------
 
-    if gender not in (None, "") and gender not in title and gender == "Unisex":
-        title += " " + gender
+def formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender, searchColorName, productsDivision):
+    title = "[NEW] "
+    brand, newRegionalDisplayName, searchColorName = s(brand), s(newRegionalDisplayName), s(searchColorName)
+    
+    if "Licence" in brand:
+        brandNameChanges = brand.replace("Licence", "PUMA", 1)
+        title += brandNameChanges
+    else:
+        title += brand
 
-    if new_regional_display_name not in title:
-        if "Trainers" in new_regional_display_name or "Trainer" in new_regional_display_name:
-            title += " " + replace_first(replace_first(new_regional_display_name, "Trainers", "Shoes"), "Trainer", "Shoes")
-        elif "Sandals" in new_regional_display_name:
-            title += " " + replace_first(new_regional_display_name, "Sandals", "Sports Sandals")
-        elif "Slides" in new_regional_display_name:
-            title += " " + replace_first(new_regional_display_name, "Slides", "Slides Slippers")
+    if gender is not None and gender != "" and gender not in title:
+        if gender == "Unisex":
+            title += " " + gender
+
+    if newRegionalDisplayName not in title:
+        checkRegionalDisplayName = ""
+        if "Trainers" in newRegionalDisplayName:
+            checkRegionalDisplayName = newRegionalDisplayName.replace("Trainers", "Shoes", 1)
+            title += " " + checkRegionalDisplayName
+        elif "Sandals" in newRegionalDisplayName:
+            checkRegionalDisplayName = newRegionalDisplayName.replace("Sandals", "Sports Sandals", 1)
+            title += " " + checkRegionalDisplayName
+        elif "Slides" in newRegionalDisplayName:
+            checkRegionalDisplayName = newRegionalDisplayName.replace("Slides", "Slides Slippers", 1)
+            title += " " + checkRegionalDisplayName
+        elif "Trainer" in newRegionalDisplayName:
+            checkRegionalDisplayName = newRegionalDisplayName.replace("Trainer", "Shoes", 1)
+            title += " " + checkRegionalDisplayName
         else:
-            title += " " + new_regional_display_name
+            title += " " + newRegionalDisplayName
 
-    if products_division == "Footwear" and search_color_name not in title:
-        title += " (" + search_color_name + ") "
+    if productsDivision == "Footwear":
+        if searchColorName not in title:
+            title += " (" + searchColorName + ") "
 
     return title
 
 
-def get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division):
-    regional_display_name, search_color_name = s(regional_display_name), s(search_color_name)
-    new_regional_display_name = replace_first(regional_display_name, "\u2019s", "'s\u2122") if "\u2019s" in regional_display_name else regional_display_name
-    get_search_color_name = search_color_name.split(" - ")[1] if " - " in search_color_name else search_color_name
+def getItemTitle(regionalDisplayName, brand, gender, activityGroup, articleType, searchColorName, productsDivision):
+    regionalDisplayName, searchColorName = s(regionalDisplayName), s(searchColorName)
+    newRegionalDisplayName = ""
+    getSearchColorName = ""
 
-    if "Men" in regional_display_name or "Women" in regional_display_name:
-        title = form_title(brand, new_regional_display_name, activity_group, article_type, "", get_search_color_name, products_division)
+    if "’s" in regionalDisplayName:
+        newRegionalDisplayName = regionalDisplayName.replace("’s", "'s™", 1)
     else:
-        title = form_title(brand, new_regional_display_name, activity_group, article_type, gender, get_search_color_name, products_division)
-    return remove_duplicates(title)
+        newRegionalDisplayName = regionalDisplayName
 
+    if " - " in searchColorName:
+        getSearchColorName = searchColorName.split(" - ")[1]
+    else:
+        getSearchColorName = searchColorName
+
+    if "Men" in regionalDisplayName or "Women" in regionalDisplayName:
+        title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, "", getSearchColorName, productsDivision)
+        itemTitle = removeDuplicates(title)
+    else:
+        title = formTitle(brand, newRegionalDisplayName, activityGroup, articleType, gender, getSearchColorName, productsDivision)
+        itemTitle = removeDuplicates(title)
+
+    return itemTitle
+
+
+# -------------------------------------------------------------------
 
 def get_variation2_size(input_ws, i):
     """Extracts Size UK (Col 22) or calculates formatted size variation string."""
@@ -293,7 +323,7 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
     size_chart_map = get_template_attribute1(size_chart_ws)
     price_col_idx = parse_column_setting(input_ws, price_col_setting)
 
-    # Group rows by Parent ID
+    # Group rows by Parent Key
     groups = {}
     for r in range(2, input_ws.max_row + 1):
         division = val(input_ws, r, 14)
@@ -328,7 +358,8 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         long_description = val(input_ws, first_idx, 25)
         care_instruction = val(input_ws, first_idx, 43)
 
-        item_title = get_item_title(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division)
+        # Uses newly integrated getItemTitle function
+        item_title = getItemTitle(regional_display_name, brand, gender, activity_group, article_type, search_color_name, products_division)
         mapped_key = f"{age_group}-{gender}-{article_group}-{article_type}-{activity_group}"
         cat_val = category_map.get(mapped_key)
         cat_id = cat_val[1] if (cat_val and len(cat_val) > 1) else ""
@@ -348,11 +379,11 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         # -------------------------------------------------------------------
         main.set_value(current_out_row, 1, parent_id)                              # SKU (Parent ID)
         main.set_value(current_out_row, 4, parent_id)                              # customSKU (Parent SKU)
-        main.set_value(current_out_row, 5, replace_spl_character(item_title))         # itemTitle
-        main.set_value(current_out_row, 9, len(row_indices))                       # noOfVariants (Total Count)
+        main.set_value(current_out_row, 5, replace_spl_character(item_title))     # itemTitle
+        main.set_value(current_out_row, 9, len(row_indices))                       # noOfVariants
         main.set_value(current_out_row, 10, "color_family")                        # variation1
         main.set_value(current_out_row, 11, "size")                                # variation2
-        main.set_value(current_out_row, 13, replace_spl_character(short_desc))       # shortDescription
+        main.set_value(current_out_row, 13, replace_spl_character(short_desc))    # shortDescription
         main.set_value(current_out_row, 17, parent_rrp)                            # itemAmount
         main.set_value(current_out_row, 18, currency_code)                         # currencyCode
         main.set_value(current_out_row, 21, cat_id)                                # categoryID
@@ -377,15 +408,15 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
         )
 
         for r_idx in sorted_row_indices:
-            custom_sku = s(val(input_ws, r_idx, 16)).strip()                       # customSKU (Graas SKU)
+            custom_sku = s(val(input_ws, r_idx, 16)).strip()                       # customSKU
             variant_rrp = val(input_ws, r_idx, price_col_idx)                      # itemAmount
             
-            # Use Color Name (Col 9) first, fallback to Col 13 if Col 9 is empty
+            # Color Name (Col 9) as primary, search_color_name as fallback
             color_name = val(input_ws, r_idx, 9)
             if not color_name:
                 color_name = val(input_ws, r_idx, 13)
 
-            size_uk_val = get_variation2_size(input_ws, r_idx)                    # variation2 (Size UK)
+            size_uk_val = get_variation2_size(input_ws, r_idx)                    # variation2 (Sorted Size)
 
             amt_val = amount_map.get(custom_sku) if custom_sku else None
             if variant_rrp == "" and amt_val:
@@ -393,8 +424,8 @@ def run_conversion(input_ws, price_ws, category_ws, size_chart_ws, stock_ws=None
 
             sale_price = amt_val[4] if (amt_val and len(amt_val) > 4) else ""
 
-            main.set_value(current_out_row, 1, parent_id)                          # SKU (Parent ID reference)
-            main.set_value(current_out_row, 4, custom_sku)                         # customSKU (Seller SKU)
+            main.set_value(current_out_row, 1, parent_id)                          # SKU
+            main.set_value(current_out_row, 4, custom_sku)                         # customSKU
             main.set_value(current_out_row, 5, replace_spl_character(item_title))     # itemTitle
             main.set_value(current_out_row, 10, color_name)                        # variation1 (Color Name)
             main.set_value(current_out_row, 11, size_uk_val)                       # variation2 (Size UK)
