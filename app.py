@@ -52,7 +52,7 @@ MASTER_COLS = {
 
 TRACKER_COLS = {
     "sku": "SKU",
-    "price_col": "Original Price",  # the "selected Tracker column" - adjust to actual column name
+    "price_col": None,  # set at runtime via the Streamlit dropdown (user selects the price column)
 }
 
 IMAGE_SHEET_COLS = {
@@ -69,6 +69,37 @@ CATEGORY_SHEET_COLS = {
     "keyword": "Title Keyword",
     "category_id": "Category ID",
 }
+
+# Region -> Currency Code mapping
+REGION_CURRENCY = {
+    "SG": "SGD",
+    "MY": "MYR",
+    "PH": "PHP",
+}
+
+MARKETPLACES = ["Lazada", "Shopee", "Zalora", "Tiktok"]
+REGIONS = ["SG", "MY", "PH"]
+
+# sizechart value (from Size Chart Sheet match) -> fixed Template Attribute 1 string
+SIZECHART_TEMPLATE_MAP = {
+    "Infant Clothing": "sizechart=Infant Clothing",
+    "Kids Clothing": "sizechart=Kids Clothing",
+    "Women Tops": "sizechart=Women Tops",
+    "Men Tops": "sizechart=Men Tops",
+    "Mens Btm": "sizechart=Mens Btm",
+    "Women Skirt": "sizechart=Women Skirt",
+    "Boys Tops": "sizechart=Boys Tops",
+    "Girls Tops": "sizechart=Girls Tops",
+    "Women Btm": "sizechart=Women Btm",
+    "Women Footwear": "sizechart=Women Footwear",
+    "Cap": "sizechart=Cap",
+    "Kids Footwear": "sizechart=Kids Footwear",
+    "Mens Footwear": "sizechart=Mens Footwear",
+    "Women Bra": "sizechart=Women Bra",
+    "Men Socks": "sizechart=Men Socks",
+}
+
+USER_TEMPLATE_NAME = "userTemplate-PumaAccessories"
 
 # Default values (spec section 7)
 DEFAULTS = {
@@ -242,20 +273,57 @@ def get_price(sku, tracker_df, sku_col, price_col):
     return val
 
 
+def extract_description_main(raw_desc):
+    """Extract the plain main description content (before DETAILS/FEATURES sections) for Template Attribute 2."""
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
+        return ""
+    desc = str(raw_desc)
+    desc = re.sub(r"<p>\s*product\s*story\s*</p>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
+    split_pattern = re.compile(r"(FEATURES\s*(&|\+)\s*BENEFITS|DETAILS)", re.IGNORECASE)
+    match = split_pattern.search(desc)
+    main_part = desc[:match.start()] if match else desc
+    main_part = main_part.strip()
+    if main_part and not re.match(r"^\s*<p", main_part, flags=re.IGNORECASE):
+        main_part = f"<p>{main_part}</p>"
+    return f"description={main_part}"
+
+
+def extract_productstory(raw_desc):
+    """Extract FEATURES & BENEFITS + DETAILS sections (raw HTML) for Template Attribute 3."""
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
+        return ""
+    desc = str(raw_desc)
+    match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS.*)", desc, flags=re.IGNORECASE | re.DOTALL)
+    story_part = match.group(1).strip() if match else ""
+    return f"productstory={story_part}" if story_part else ""
+
+
+def build_size_chart_template_attribute(size_chart_label):
+    """Map the matched Size Chart Sheet label to its fixed Template Attribute 1 string."""
+    if not size_chart_label:
+        return ""
+    label = str(size_chart_label).strip()
+    return SIZECHART_TEMPLATE_MAP.get(label, f"sizechart={label}" if label else "")
+
+
 # ======================================================================================
 # CORE TRANSFORMATION
 # ======================================================================================
 
-def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df, output_columns=None):
+def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
+                        output_columns=None, tracker_sku_col="SKU", tracker_price_col=None,
+                        region="PH", marketplace="Lazada"):
     mc = MASTER_COLS
-    tc = TRACKER_COLS
+    tc = {"sku": tracker_sku_col, "price_col": tracker_price_col}
     ic = IMAGE_SHEET_COLS
     sc = SIZE_CHART_COLS
     cc = CATEGORY_SHEET_COLS
 
+    currency_code = REGION_CURRENCY.get(region, "PHP")
+
     rows = []
 
-    # Determine grouping key: footwear -> style+color, else -> style only
     def group_key(r):
         ptype = r.get(mc["product_type"], "")
         style = r.get(mc["style_no"], "")
@@ -281,8 +349,9 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
         )
 
         style_number = first.get(mc["style_no"], "")
+        raw_desc = first.get(mc["description"], "")
         desc = clean_description(
-            first.get(mc["description"], ""),
+            raw_desc,
             style_number,
             first.get(mc["care"], None),
             first.get(mc["care_label"], None),
@@ -290,37 +359,67 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
         size_chart_url = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["size_chart_url"])
+        size_chart_label = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["category_or_title"])
 
-        has_variants = len(group_df) > 1
+        total_variation_count = len(group_df)
+        has_variants = total_variation_count > 1
 
-        parent_row = {
-            "Row Type": "Parent",
+        template_attr_1 = build_size_chart_template_attribute(size_chart_label)
+        template_attr_2 = extract_description_main(raw_desc)
+        template_attr_3 = extract_productstory(raw_desc)
+
+        base_row = {
+            "Product Description 1": USER_TEMPLATE_NAME,
             "Title": title,
             "Description": desc,
-            "Style Number": style_number,
+            "Total variation": total_variation_count,
+            "Currency Code": currency_code,
+            "Quantity": 0,
             "Category ID": category_id,
-            "Size Chart": size_chart_url,
-            "Stock": 0,
-            **DEFAULTS,
+            "Tax Class": "Default",
+            "Brand": "PUMA",
+            "Model": style_number,
+            "Warranty Type": "No Warranty",
+            "Package Weight (kg)": 0.5,
+            "Package Height(cm)": 15,
+            "Package Length(cm)": 12,
+            "Package Width(cm)": 12,
+            "What's in the Box": f"1 X {title}",
+            "size chart Image URL": size_chart_url,
+            "Template Attribute 1": template_attr_1,
+            "Template Attribute 2": template_attr_2,
+            "Template Attribute 3": template_attr_3,
+            "Region": region,
+            "Marketplace": marketplace,
         }
+
         if not has_variants:
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
-            parent_row["SKU"] = sku
-            parent_row["Price"] = get_price(sku, tracker_df, tc["sku"], tc["price_col"])
-            parent_row["Color Family"] = single.get(mc["color_family"], "")
-            parent_row["Color Name"] = single.get(mc["color_name"], "")
-            parent_row["Size"] = single.get(mc["size"], "")
-            parent_row["UK Size"] = single.get(mc["uk_size"], "")
-            parent_row["Images"] = "; ".join(
-                get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])
-            )
-            rows.append(parent_row)
+            color_family = single.get(mc["color_family"], "")
+            uk_size = single.get(mc["uk_size"], "")
+            row = {
+                "Row Type": "Parent",
+                **base_row,
+                "SKU": sku,
+                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "Variation 1": single.get(mc["color_name"], ""),
+                "Variation 2": uk_size,
+                "Product Specification 1": f"sku.color_family={color_family}",
+                "Product Specification 2": f"sku.size={uk_size}",
+                "Stock": 0,
+                "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
+            }
+            rows.append(row)
             continue
 
+        parent_row = {
+            "Row Type": "Parent",
+            **base_row,
+            "Stock": 0,
+        }
         rows.append(parent_row)
 
-        # Sort child rows: by color family/name, then by size order
         child_records = group_df.to_dict("records")
         child_records.sort(
             key=lambda r: (
@@ -332,30 +431,25 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
 
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
+            color_family = rec.get(mc["color_family"], "")
+            uk_size = rec.get(mc["uk_size"], "")
             child_row = {
                 "Row Type": "Child",
-                "Title": title,
-                "Description": "",  # child rows: SKU-specific only, description lives on parent
-                "Style Number": style_number,
-                "Category ID": category_id,
-                "Size Chart": size_chart_url,
-                "Stock": 0,
+                **base_row,
+                "Description": "",  # child rows: SKU-specific only
                 "SKU": sku,
-                "Price": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
-                "Color Family": rec.get(mc["color_family"], ""),
-                "Color Name": rec.get(mc["color_name"], ""),
-                "Size": rec.get(mc["size"], ""),
-                "UK Size": rec.get(mc["uk_size"], ""),
-                "Images": "; ".join(
-                    get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])
-                ),
-                **DEFAULTS,
+                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "Variation 1": rec.get(mc["color_name"], ""),
+                "Variation 2": uk_size,
+                "Product Specification 1": f"sku.color_family={color_family}",
+                "Product Specification 2": f"sku.size={uk_size}",
+                "Stock": 0,
+                "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
             }
             rows.append(child_row)
 
     out_df = pd.DataFrame(rows)
 
-    # If a sample format was provided, reorder/reindex columns to match exactly
     if output_columns:
         for col in output_columns:
             if col not in out_df.columns:
@@ -381,6 +475,14 @@ seeing your actual files.
 """
 )
 
+st.markdown("### 🌏 Region & Marketplace")
+rcol1, rcol2 = st.columns(2)
+with rcol1:
+    selected_region = st.selectbox("Region", options=REGIONS, index=REGIONS.index("PH"))
+with rcol2:
+    selected_marketplace = st.selectbox("Marketplace", options=MARKETPLACES, index=MARKETPLACES.index("Lazada"))
+
+st.markdown("### 📁 Source Files")
 col1, col2 = st.columns(2)
 with col1:
     master_file = st.file_uploader("Master Input Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="master")
@@ -400,9 +502,38 @@ def load_any(f):
     return pd.read_excel(f)
 
 
+# --- Tracker column pickers (SKU column + Price column) ---
+tracker_sku_col = "SKU"
+tracker_price_col = None
+
+if tracker_file is not None:
+    _tracker_preview_df = load_any(tracker_file)
+    tracker_file.seek(0)  # reset pointer so it can be read again later
+    tracker_cols_available = list(_tracker_preview_df.columns)
+
+    st.markdown("#### 📌 Tracker Sheet — Column Selection")
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        tracker_sku_col = st.selectbox(
+            "SKU column in Tracker Sheet",
+            options=tracker_cols_available,
+            index=tracker_cols_available.index("SKU") if "SKU" in tracker_cols_available else 0,
+            key="tracker_sku_col_select",
+        )
+    with tcol2:
+        tracker_price_col = st.selectbox(
+            "Price column to use (Original Price source)",
+            options=tracker_cols_available,
+            key="tracker_price_col_select",
+            help="Choose which column in the Tracker Sheet holds the price you want pulled into the upload sheet.",
+        )
+
+
 if st.button("🚀 Generate Upload Sheet", type="primary"):
     if master_file is None:
         st.error("Master Input Sheet is required.")
+    elif tracker_file is not None and tracker_price_col is None:
+        st.error("Please select a Price column from the Tracker Sheet.")
     else:
         with st.spinner("Processing..."):
             master_df = load_any(master_file)
@@ -416,7 +547,11 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
 
             try:
                 result_df = build_upload_sheet(
-                    master_df, tracker_df, image_df, size_chart_df, category_df, output_columns
+                    master_df, tracker_df, image_df, size_chart_df, category_df, output_columns,
+                    tracker_sku_col=tracker_sku_col,
+                    tracker_price_col=tracker_price_col,
+                    region=selected_region,
+                    marketplace=selected_marketplace,
                 )
             except KeyError as e:
                 st.error(
