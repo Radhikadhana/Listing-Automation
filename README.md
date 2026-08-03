@@ -8,20 +8,23 @@ IDs.
 
 ## ⚠️ Before you run this
 
-The column-name constants at the top of `app.py` (`MASTER_COLS`,
+**No code editing required.** Column mapping now happens entirely in the app:
+after you upload each sheet, dropdowns appear so you can match every field
+(Style Number, SKU, Article Number, Brand, etc.) to your sheet's actual
+column headers. The constants at the top of `app.py` (`MASTER_COLS`,
 `TRACKER_COLS`, `IMAGE_SHEET_COLS`, `SIZE_CHART_COLS`, `CATEGORY_SHEET_COLS`)
-are **best-guess placeholders** because this app was built without seeing
-your real spreadsheets. Open `app.py`, find the `CONFIG` section near the
-top, and edit each dictionary value to match your actual column headers
-exactly (e.g. if your Master Sheet calls it `"Style No."` instead of
-`"Style Number"`, update it there). If you upload a Sample Upload Format
-file in the app, the final output columns/order will automatically match it.
+are only used as fallback defaults / best-guess pre-selections in those
+dropdowns — you never need to open `app.py` to fix a "column mapping
+mismatch" error anymore. If you upload a Sample Upload Format file in the
+app, the final output columns/order will automatically match it.
 
 **Pricing note:** the Tracker Sheet is keyed by **PIM Article**, not SKU.
-The app resolves price by: SKU (Master row) → `Article Number` (Master row,
-`MASTER_COLS["article"]`) → PIM Article (Tracker row, selected in the app
-UI) → Price column (selected in the app UI). Make sure `MASTER_COLS["article"]`
-matches the actual Article Number column header in your Master Sheet.
+The app resolves price by: SKU (Master row) → Article Number (Master row,
+mapped in the "Master Sheet — Column Mapping" section) → PIM Article
+(Tracker row, mapped in "Tracker Sheet — Column Selection") → Price column
+(also selected there). Just make sure you pick the correct Article Number
+column for the Master Sheet and the correct PIM Article column for the
+Tracker Sheet in their respective dropdowns.
 
 ## Project structure
 
@@ -71,7 +74,7 @@ git push -u origin main
 | 2. Parent & Child Grouping | `build_upload_sheet()` groups by Style Number (or Style+Color for footwear) |
 | 3. Variations | Color Family→Color Name, Size→UK Size, sorted via `size_sort_key()` |
 | 4. Description Cleaning | `clean_description()` — strips tags, converts headings/bullets, appends Style/Care/Care Label |
-| 5. Price | `get_price()` looks up price in the Tracker Sheet by **PIM Article Number** (not SKU). The Master Sheet's `Article Number` column for each SKU is resolved first, then used to find the matching row in the Tracker Sheet. |
+| 5. Price | `get_price()` looks up price in the Tracker Sheet by **PIM Article Number** (not SKU). The Master Sheet's Article Number column for each SKU (picked in the in-app column mapping) is resolved first, then used to find the matching row in the Tracker Sheet. |
 | 6. Stock | Hardcoded to `0` for every Parent/Child row |
 | 7. Default Values | `DEFAULTS` dict applied to every row |
 | 8. Images | `get_images_for_sku()` pulls from the Image Sheet by SKU |
