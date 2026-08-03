@@ -17,6 +17,12 @@ exactly (e.g. if your Master Sheet calls it `"Style No."` instead of
 `"Style Number"`, update it there). If you upload a Sample Upload Format
 file in the app, the final output columns/order will automatically match it.
 
+**Pricing note:** the Tracker Sheet is keyed by **PIM Article**, not SKU.
+The app resolves price by: SKU (Master row) → `Article Number` (Master row,
+`MASTER_COLS["article"]`) → PIM Article (Tracker row, selected in the app
+UI) → Price column (selected in the app UI). Make sure `MASTER_COLS["article"]`
+matches the actual Article Number column header in your Master Sheet.
+
 ## Project structure
 
 ```
@@ -65,7 +71,7 @@ git push -u origin main
 | 2. Parent & Child Grouping | `build_upload_sheet()` groups by Style Number (or Style+Color for footwear) |
 | 3. Variations | Color Family→Color Name, Size→UK Size, sorted via `size_sort_key()` |
 | 4. Description Cleaning | `clean_description()` — strips tags, converts headings/bullets, appends Style/Care/Care Label |
-| 5. Price | `get_price()` pulls from the Tracker sheet by SKU |
+| 5. Price | `get_price()` looks up price in the Tracker Sheet by **PIM Article Number** (not SKU). The Master Sheet's `Article Number` column for each SKU is resolved first, then used to find the matching row in the Tracker Sheet. |
 | 6. Stock | Hardcoded to `0` for every Parent/Child row |
 | 7. Default Values | `DEFAULTS` dict applied to every row |
 | 8. Images | `get_images_for_sku()` pulls from the Image Sheet by SKU |
