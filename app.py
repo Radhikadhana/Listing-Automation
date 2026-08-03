@@ -320,12 +320,13 @@ def build_size_chart_template_attribute(size_chart_label):
 
 def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
                         output_columns=None, tracker_article_col="PIM Article", tracker_price_col=None,
+                        master_cols=None, image_cols=None, sizechart_cols=None, category_cols=None,
                         region="PH", marketplace="Lazada"):
-    mc = MASTER_COLS
+    mc = master_cols or MASTER_COLS
     tc = {"article": tracker_article_col, "price_col": tracker_price_col}
-    ic = IMAGE_SHEET_COLS
-    sc = SIZE_CHART_COLS
-    cc = CATEGORY_SHEET_COLS
+    ic = image_cols or IMAGE_SHEET_COLS
+    sc = sizechart_cols or SIZE_CHART_COLS
+    cc = category_cols or CATEGORY_SHEET_COLS
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
 
@@ -477,10 +478,9 @@ st.title("🛒 Marketplace Bulk Upload Sheet Generator")
 
 st.markdown(
     """
-Upload your source sheets below. Column-name mapping is configured at the top of
-`app.py` (`MASTER_COLS`, `TRACKER_COLS`, etc.) — **edit those constants to match
-your real spreadsheet headers** before running, since this app was built without
-seeing your actual files.
+Upload your source sheets below. **Column mapping happens right here in the app** —
+after you upload a file, dropdowns will appear so you can match each field to your
+sheet's actual column headers. Nothing needs to be edited in `app.py`.
 """
 )
 
@@ -511,6 +511,61 @@ def load_any(f):
     return pd.read_excel(f)
 
 
+def guess_index(options, keywords):
+    """Best-guess default index into `options` by substring match against `keywords`."""
+    options_str = [str(o) for o in options]
+    for kw in keywords:
+        for i, o in enumerate(options_str):
+            if kw.lower() in o.lower():
+                return i
+    return 0
+
+
+NONE_LABEL = "-- None / not in this sheet --"
+
+
+def mapped_select(label, options, keywords, key, allow_none=False, help_text=None):
+    opts = ([NONE_LABEL] + list(options)) if allow_none else list(options)
+    guessed = guess_index(options, keywords)
+    idx = (guessed + 1) if allow_none else guessed
+    choice = st.selectbox(label, options=opts, index=idx, key=key, help=help_text)
+    return None if (allow_none and choice == NONE_LABEL) else choice
+
+
+# --- Master Sheet column mapping ---
+master_cols_map = dict(MASTER_COLS)  # fallback defaults
+if master_file is not None:
+    _master_preview_df = load_any(master_file)
+    master_file.seek(0)
+    master_cols_available = list(_master_preview_df.columns)
+
+    st.markdown("#### 📌 Master Sheet — Column Mapping")
+    st.caption("Match each field below to the actual column header in your Master Sheet.")
+    mm1, mm2, mm3 = st.columns(3)
+    with mm1:
+        master_cols_map["style_no"] = mapped_select("Style Number", master_cols_available, ["style"], "mc_style_no")
+        master_cols_map["color_no"] = mapped_select("Color Number", master_cols_available, ["color no", "colour no", "color number"], "mc_color_no", allow_none=True)
+        master_cols_map["brand"] = mapped_select("Brand", master_cols_available, ["brand"], "mc_brand")
+        master_cols_map["gender"] = mapped_select("Gender", master_cols_available, ["gender"], "mc_gender")
+        master_cols_map["title"] = mapped_select("Title / Display Name", master_cols_available, ["display name", "title"], "mc_title")
+        master_cols_map["product_type"] = mapped_select("Product Type", master_cols_available, ["product type"], "mc_product_type")
+    with mm2:
+        master_cols_map["color_family"] = mapped_select("Color Family", master_cols_available, ["color family", "colour family"], "mc_color_family")
+        master_cols_map["color_name"] = mapped_select("Color Name", master_cols_available, ["color name", "colour name"], "mc_color_name")
+        master_cols_map["size"] = mapped_select("Size", master_cols_available, ["size"], "mc_size")
+        master_cols_map["uk_size"] = mapped_select("UK Size", master_cols_available, ["uk size"], "mc_uk_size")
+        master_cols_map["sku"] = mapped_select("SKU", master_cols_available, ["sku"], "mc_sku")
+        master_cols_map["article"] = mapped_select(
+            "Article Number (PIM Article)", master_cols_available, ["article"], "mc_article",
+            help_text="Used to look up price in the Tracker Sheet, which is keyed by PIM Article, not SKU.",
+        )
+    with mm3:
+        master_cols_map["description"] = mapped_select("Description", master_cols_available, ["description"], "mc_description")
+        master_cols_map["care"] = mapped_select("Care", master_cols_available, ["care"], "mc_care", allow_none=True)
+        master_cols_map["care_label"] = mapped_select("Care Label", master_cols_available, ["care label"], "mc_care_label", allow_none=True)
+        master_cols_map["footwear_color"] = mapped_select("Footwear Color", master_cols_available, ["footwear color"], "mc_footwear_color", allow_none=True)
+
+
 # --- Tracker column pickers (Article column + Price column) ---
 # The Tracker Sheet only contains a PIM Article column, not SKU. The Master
 # Sheet has both SKU and Article Number, so pricing is matched via:
@@ -526,19 +581,75 @@ if tracker_file is not None:
     st.markdown("#### 📌 Tracker Sheet — Column Selection")
     tcol1, tcol2 = st.columns(2)
     with tcol1:
-        tracker_article_col = st.selectbox(
-            "PIM Article column in Tracker Sheet",
-            options=tracker_cols_available,
-            index=tracker_cols_available.index("PIM Article") if "PIM Article" in tracker_cols_available else 0,
-            key="tracker_article_col_select",
-            help="The Tracker Sheet is keyed by PIM Article Number, not SKU. Select that column here.",
+        tracker_article_col = mapped_select(
+            "PIM Article column in Tracker Sheet", tracker_cols_available, ["pim article", "article"],
+            "tracker_article_col_select",
+            help_text="The Tracker Sheet is keyed by PIM Article Number, not SKU. Select that column here.",
         )
     with tcol2:
-        tracker_price_col = st.selectbox(
-            "Price column to use (Original Price source)",
-            options=tracker_cols_available,
-            key="tracker_price_col_select",
-            help="Choose which column in the Tracker Sheet holds the price you want pulled into the upload sheet.",
+        tracker_price_col = mapped_select(
+            "Price column to use (Original Price source)", tracker_cols_available, ["original price", "price"],
+            "tracker_price_col_select",
+            help_text="Choose which column in the Tracker Sheet holds the price you want pulled into the upload sheet.",
+        )
+
+
+# --- Image Sheet column mapping ---
+image_cols_map = dict(IMAGE_SHEET_COLS)
+if image_file is not None:
+    _image_preview_df = load_any(image_file)
+    image_file.seek(0)
+    image_cols_available = list(_image_preview_df.columns)
+
+    st.markdown("#### 📌 Image Sheet — Column Selection")
+    icol1, icol2 = st.columns(2)
+    with icol1:
+        image_cols_map["sku"] = mapped_select("SKU column in Image Sheet", image_cols_available, ["sku"], "image_sku_col")
+    with icol2:
+        default_image_cols = [c for c in image_cols_available if "image" in str(c).lower()]
+        image_cols_map["image_cols"] = st.multiselect(
+            "Image columns (select all that apply, in order)",
+            options=image_cols_available,
+            default=default_image_cols,
+            key="image_cols_select",
+        )
+
+
+# --- Size Chart Sheet column mapping ---
+sizechart_cols_map = dict(SIZE_CHART_COLS)
+if size_chart_file is not None:
+    _sizechart_preview_df = load_any(size_chart_file)
+    size_chart_file.seek(0)
+    sizechart_cols_available = list(_sizechart_preview_df.columns)
+
+    st.markdown("#### 📌 Size Chart Sheet — Column Selection")
+    scol1, scol2 = st.columns(2)
+    with scol1:
+        sizechart_cols_map["category_or_title"] = mapped_select(
+            "Category / Title match column", sizechart_cols_available, ["category", "title"], "sizechart_key_col"
+        )
+    with scol2:
+        sizechart_cols_map["size_chart_url"] = mapped_select(
+            "Size Chart URL column", sizechart_cols_available, ["size chart url", "url"], "sizechart_url_col"
+        )
+
+
+# --- Category Sheet column mapping ---
+category_cols_map = dict(CATEGORY_SHEET_COLS)
+if category_file is not None:
+    _category_preview_df = load_any(category_file)
+    category_file.seek(0)
+    category_cols_available = list(_category_preview_df.columns)
+
+    st.markdown("#### 📌 Category Sheet — Column Selection")
+    ccol1, ccol2 = st.columns(2)
+    with ccol1:
+        category_cols_map["keyword"] = mapped_select(
+            "Title Keyword column", category_cols_available, ["keyword", "title"], "category_keyword_col"
+        )
+    with ccol2:
+        category_cols_map["category_id"] = mapped_select(
+            "Category ID column", category_cols_available, ["category id", "category"], "category_id_col"
         )
 
 
@@ -563,14 +674,17 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     master_df, tracker_df, image_df, size_chart_df, category_df, output_columns,
                     tracker_article_col=tracker_article_col,
                     tracker_price_col=tracker_price_col,
+                    master_cols=master_cols_map,
+                    image_cols=image_cols_map,
+                    sizechart_cols=sizechart_cols_map,
+                    category_cols=category_cols_map,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
             except KeyError as e:
                 st.error(
                     f"Column mapping mismatch: {e}. "
-                    "Please edit the CONFIG constants (MASTER_COLS, TRACKER_COLS, etc.) "
-                    "at the top of app.py to match your actual sheet's column headers, then rerun."
+                    "Double-check the column mapping dropdowns above match your actual sheet headers, then rerun."
                 )
                 st.stop()
 
