@@ -42,6 +42,7 @@ MASTER_COLS = {
     "size": "Size",
     "uk_size": "UK Size",
     "sku": "SKU",
+    "article": "Article Number",  # PIM Article Number column in the Master Sheet — used to look up price in Tracker Sheet (Tracker only has Article, not SKU)
     "description": "Description",
     "care": "Care",
     "care_label": "Care Label",
@@ -51,7 +52,7 @@ MASTER_COLS = {
 }
 
 TRACKER_COLS = {
-    "sku": "SKU",
+    "article": "PIM Article",  # Tracker Sheet only has an Article column, not SKU
     "price_col": None,  # set at runtime via the Streamlit dropdown (user selects the price column)
 }
 
@@ -263,10 +264,16 @@ def get_images_for_sku(sku, image_df, sku_col, image_cols):
     return imgs
 
 
-def get_price(sku, tracker_df, sku_col, price_col):
-    if tracker_df is None or tracker_df.empty:
+def get_price(article, tracker_df, article_col, price_col):
+    """Look up price in the Tracker Sheet by Article Number.
+
+    The Tracker Sheet only contains a PIM Article column (no SKU), so the
+    Master Sheet's Article Number for a given SKU must be resolved first and
+    passed in here as `article`.
+    """
+    if tracker_df is None or tracker_df.empty or not article or str(article).strip() == "":
         return ""
-    row = tracker_df[tracker_df[sku_col].astype(str) == str(sku)]
+    row = tracker_df[tracker_df[article_col].astype(str).str.strip() == str(article).strip()]
     if row.empty:
         return ""
     val = row.iloc[0].get(price_col, "")
@@ -312,10 +319,10 @@ def build_size_chart_template_attribute(size_chart_label):
 # ======================================================================================
 
 def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
-                        output_columns=None, tracker_sku_col="SKU", tracker_price_col=None,
+                        output_columns=None, tracker_article_col="PIM Article", tracker_price_col=None,
                         region="PH", marketplace="Lazada"):
     mc = MASTER_COLS
-    tc = {"sku": tracker_sku_col, "price_col": tracker_price_col}
+    tc = {"article": tracker_article_col, "price_col": tracker_price_col}
     ic = IMAGE_SHEET_COLS
     sc = SIZE_CHART_COLS
     cc = CATEGORY_SHEET_COLS
@@ -396,13 +403,14 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
         if not has_variants:
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
+            article = single.get(mc["article"], "")
             color_family = single.get(mc["color_family"], "")
             uk_size = single.get(mc["uk_size"], "")
             row = {
                 "Row Type": "Parent",
                 **base_row,
                 "SKU": sku,
-                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "RRP": get_price(article, tracker_df, tc["article"], tc["price_col"]),
                 "Variation 1": single.get(mc["color_name"], ""),
                 "Variation 2": uk_size,
                 "Product Specification 1": f"sku.color_family={color_family}",
@@ -431,6 +439,7 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
 
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
+            article = rec.get(mc["article"], "")
             color_family = rec.get(mc["color_family"], "")
             uk_size = rec.get(mc["uk_size"], "")
             child_row = {
@@ -438,7 +447,7 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
                 **base_row,
                 "Description": "",  # child rows: SKU-specific only
                 "SKU": sku,
-                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "RRP": get_price(article, tracker_df, tc["article"], tc["price_col"]),
                 "Variation 1": rec.get(mc["color_name"], ""),
                 "Variation 2": uk_size,
                 "Product Specification 1": f"sku.color_family={color_family}",
@@ -502,8 +511,11 @@ def load_any(f):
     return pd.read_excel(f)
 
 
-# --- Tracker column pickers (SKU column + Price column) ---
-tracker_sku_col = "SKU"
+# --- Tracker column pickers (Article column + Price column) ---
+# The Tracker Sheet only contains a PIM Article column, not SKU. The Master
+# Sheet has both SKU and Article Number, so pricing is matched via:
+#   SKU (Master row) -> Article Number (Master row) -> Article (Tracker row) -> Price
+tracker_article_col = "PIM Article"
 tracker_price_col = None
 
 if tracker_file is not None:
@@ -514,11 +526,12 @@ if tracker_file is not None:
     st.markdown("#### 📌 Tracker Sheet — Column Selection")
     tcol1, tcol2 = st.columns(2)
     with tcol1:
-        tracker_sku_col = st.selectbox(
-            "SKU column in Tracker Sheet",
+        tracker_article_col = st.selectbox(
+            "PIM Article column in Tracker Sheet",
             options=tracker_cols_available,
-            index=tracker_cols_available.index("SKU") if "SKU" in tracker_cols_available else 0,
-            key="tracker_sku_col_select",
+            index=tracker_cols_available.index("PIM Article") if "PIM Article" in tracker_cols_available else 0,
+            key="tracker_article_col_select",
+            help="The Tracker Sheet is keyed by PIM Article Number, not SKU. Select that column here.",
         )
     with tcol2:
         tracker_price_col = st.selectbox(
@@ -548,7 +561,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             try:
                 result_df = build_upload_sheet(
                     master_df, tracker_df, image_df, size_chart_df, category_df, output_columns,
-                    tracker_sku_col=tracker_sku_col,
+                    tracker_article_col=tracker_article_col,
                     tracker_price_col=tracker_price_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
