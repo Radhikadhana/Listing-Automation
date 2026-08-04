@@ -344,7 +344,7 @@ def build_size_chart_template_attribute(size_chart_label):
 # ======================================================================================
 
 def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
-                        output_columns=None, tracker_article_col="PIM Article", tracker_price_col=None,
+                        tracker_article_col="PIM Article", tracker_price_col=None,
                         master_cols=None, image_cols=None, sizechart_cols=None, category_cols=None,
                         region="PH", marketplace="Lazada"):
     mc = master_cols or MASTER_COLS
@@ -490,13 +490,6 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
             rows.append(child_row)
 
     out_df = pd.DataFrame(rows)
-
-    if output_columns:
-        for col in output_columns:
-            if col not in out_df.columns:
-                out_df[col] = ""
-        out_df = out_df[output_columns]
-
     return out_df
 
 
@@ -763,7 +756,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
 
             try:
                 result_df = build_upload_sheet(
-                    master_df, tracker_df, image_df, size_chart_df, category_df, output_columns,
+                    master_df, tracker_df, image_df, size_chart_df, category_df,
                     tracker_article_col=tracker_article_col,
                     tracker_price_col=tracker_price_col,
                     master_cols=master_cols_map,
@@ -784,9 +777,21 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                    f"{(result_df['Row Type']=='Child').sum()} child).")
         st.dataframe(result_df, use_container_width=True)
 
+        # Build the exact-format export separately from the full working table above,
+        # so a Sample Upload Format without a "Row Type" column (or any other internal
+        # column) never breaks the on-screen preview/stats.
+        if output_columns:
+            export_df = result_df.copy()
+            for col in output_columns:
+                if col not in export_df.columns:
+                    export_df[col] = ""
+            export_df = export_df[output_columns]
+        else:
+            export_df = result_df
+
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            result_df.to_excel(writer, index=False, sheet_name="Upload")
+            export_df.to_excel(writer, index=False, sheet_name="Upload")
         buffer.seek(0)
 
         st.download_button(
