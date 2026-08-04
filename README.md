@@ -8,14 +8,23 @@ IDs.
 
 ## ⚠️ Before you run this
 
-The column-name constants at the top of `app.py` (`MASTER_COLS`,
+**No code editing required.** Column mapping now happens entirely in the app:
+after you upload each sheet, dropdowns appear so you can match every field
+(Style Number, SKU, Article Number, Brand, etc.) to your sheet's actual
+column headers. The constants at the top of `app.py` (`MASTER_COLS`,
 `TRACKER_COLS`, `IMAGE_SHEET_COLS`, `SIZE_CHART_COLS`, `CATEGORY_SHEET_COLS`)
-are **best-guess placeholders** because this app was built without seeing
-your real spreadsheets. Open `app.py`, find the `CONFIG` section near the
-top, and edit each dictionary value to match your actual column headers
-exactly (e.g. if your Master Sheet calls it `"Style No."` instead of
-`"Style Number"`, update it there). If you upload a Sample Upload Format
-file in the app, the final output columns/order will automatically match it.
+are only used as fallback defaults / best-guess pre-selections in those
+dropdowns — you never need to open `app.py` to fix a "column mapping
+mismatch" error anymore. If you upload a Sample Upload Format file in the
+app, the final output columns/order will automatically match it.
+
+**Pricing note:** the Tracker Sheet is keyed by **PIM Article**, not SKU.
+The app resolves price by: SKU (Master row) → Article Number (Master row,
+mapped in the "Master Sheet — Column Mapping" section) → PIM Article
+(Tracker row, mapped in "Tracker Sheet — Column Selection") → Price column
+(also selected there). Just make sure you pick the correct Article Number
+column for the Master Sheet and the correct PIM Article column for the
+Tracker Sheet in their respective dropdowns.
 
 ## Project structure
 
@@ -61,16 +70,17 @@ git push -u origin main
 
 | Spec section | Implemented as |
 |---|---|
-| 1. Title | `clean_title()` — brand/gender/name/footwear color, word replacements, dedupe |
-| 2. Parent & Child Grouping | `build_upload_sheet()` groups by Style Number (or Style+Color for footwear) |
-| 3. Variations | Color Family→Color Name, Size→UK Size, sorted via `size_sort_key()` |
-| 4. Description Cleaning | `clean_description()` — strips tags, converts headings/bullets, appends Style/Care/Care Label |
-| 5. Price | `get_price()` pulls from the Tracker sheet by SKU |
+| 1. Title | `clean_title()` — brand, Gender (if Unisex), Regional Display Name, footwear color; word replacements (Trainers→Shoes, Sandals→Sports Sandals, Slides→Slides Slippers); duplicate-word dedupe |
+| 2. Parent & Child Grouping | `build_upload_sheet()` groups by Style Number, using **Product Division** (falls back to Product Type if Division isn't mapped) to decide whether to also split by Color Number (footwear only). UK Size is used for all divisions. |
+| 3. Variations | Parent row: Variation 1/2 = axis names ("Color Family" / "Size"). Child rows: Variation 1 = Color Name, Variation 2 = UK Size, sorted via `size_sort_key()` on UK Size |
+| 4. Description Cleaning | `clean_description()` — strips PRODUCT STORY heading, converts DETAILS/FEATURES & BENEFITS headings, bullets, appends Style/Care/Care Label sections |
+| 5. Price | `get_price()` looks up price in the Tracker Sheet by **PIM Article** (not SKU). Resolved via: SKU (Master, e.g. "EAN") → Article Number (Master, e.g. "Color No") → PIM Article (Tracker) → Price. All column names are picked in the app's dropdowns, including an Excel-column-letter override for sheets with blank/garbled headers. |
 | 6. Stock | Hardcoded to `0` for every Parent/Child row |
-| 7. Default Values | `DEFAULTS` dict applied to every row |
+| 7. Default Values | Currency, Warranty, Package dimensions, and **Shipping Service Details ("Standard Local:40.00")** applied to every row |
 | 8. Images | `get_images_for_sku()` pulls from the Image Sheet by SKU |
-| 9. Size Chart | `match_size_chart()` matches title/category to the Size Chart Sheet |
+| 9. Size Chart | `match_size_chart()` matches title/category to the Size Chart Sheet; applied to both parent and child rows |
 | 10. Category | `match_category_id()` matches title keywords to the Category Sheet |
+| Product Specification | Specification 1 is fixed to `Brand:PUMA`; Specification 2/3 carry `sku.color_family=` / `sku.size=` per SKU |
 
 ## Known adjustments still needed once real files are shared
 
