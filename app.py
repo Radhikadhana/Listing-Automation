@@ -133,6 +133,70 @@ ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS
 # HELPERS
 # ======================================================================================
 
+HEADER_SYNONYMS = {
+    "row type": "Row Type", "rowtype": "Row Type",
+    "seller sku": "Seller SKU", "sellersku": "Seller SKU",
+    "parent sku": "Parent SKU", "parentsku": "Parent SKU",
+    "sku": "SKU",
+    "product name": "Product Name", "productname": "Product Name",
+    "title": "Title",
+    "description": "Description",
+    "total variation": "Total variation", "total variations": "Total variation",
+    "currency code": "Currency Code", "currency": "Currency Code",
+    "quantity": "Quantity", "stock": "Stock",
+    "category id": "Category ID", "categoryid": "Category ID",
+    "tax class": "Tax Class",
+    "brand": "Brand",
+    "model": "Model",
+    "warranty type": "Warranty Type", "warranty": "Warranty Type",
+    "package weight (kg)": "Package Weight (kg)", "package weight": "Package Weight (kg)",
+    "package height(cm)": "Package Height(cm)", "package height": "Package Height(cm)",
+    "package length(cm)": "Package Length(cm)", "package length": "Package Length(cm)",
+    "package width(cm)": "Package Width(cm)", "package width": "Package Width(cm)",
+    "what's in the box": "What's in the Box", "whats in the box": "What's in the Box",
+    "rrp": "RRP", "price": "RRP",
+    "variation 1": "Variation 1", "variation1": "Variation 1",
+    "variation 2": "Variation 2", "variation2": "Variation 2",
+    "images": "Images", "image": "Images",
+    "size chart image url": "size chart Image URL", "size chart url": "size chart Image URL",
+    "template attribute 1": "Template Attribute 1",
+    "template attribute 2": "Template Attribute 2",
+    "template attribute 3": "Template Attribute 3",
+    "product specification 1": "Product Specification 1",
+    "product specification 2": "Product Specification 2",
+    "product specification 3": "Product Specification 3",
+    "shipping service details": "Shipping Service Details", "shipping service": "Shipping Service Details",
+    "region": "Region",
+    "marketplace": "Marketplace",
+    "product description 1": "Product Description 1",
+}
+
+
+def _normalize_header(h):
+    return re.sub(r"[^a-z0-9]+", " ", str(h).strip().lower()).strip()
+
+
+def align_to_sample_headers(result_df, sample_columns):
+    """Build an export dataframe matching the sample's exact header text/order,
+    even when result_df's internal column names differ in wording/spacing/case."""
+    normalized_result = {_normalize_header(c): c for c in result_df.columns}
+    export_df = pd.DataFrame(index=result_df.index)
+    unmatched = []
+    for sample_col in sample_columns:
+        norm = _normalize_header(sample_col)
+        source_col = None
+        if norm in normalized_result:
+            source_col = normalized_result[norm]
+        elif norm in HEADER_SYNONYMS and _normalize_header(HEADER_SYNONYMS[norm]) in normalized_result:
+            source_col = normalized_result[_normalize_header(HEADER_SYNONYMS[norm])]
+        if source_col is not None:
+            export_df[sample_col] = result_df[source_col]
+        else:
+            export_df[sample_col] = ""
+            unmatched.append(sample_col)
+    return export_df, unmatched
+
+
 def clean_title(brand, gender, title, footwear_color, is_footwear):
     """Build title per spec section 1."""
     title = "" if title is None or (isinstance(title, float) and pd.isna(title)) else str(title)
@@ -842,11 +906,13 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
         # so a Sample Upload Format without a "Row Type" column (or any other internal
         # column) never breaks the on-screen preview/stats.
         if output_columns:
-            export_df = result_df.copy()
-            for col in output_columns:
-                if col not in export_df.columns:
-                    export_df[col] = ""
-            export_df = export_df[output_columns]
+            export_df, unmatched_headers = align_to_sample_headers(result_df, output_columns)
+            if unmatched_headers:
+                st.warning(
+                    "Couldn't confidently match these Sample Upload Format headers to a generated "
+                    f"column (left blank in the export): {', '.join(unmatched_headers)}. "
+                    "Check spelling/wording against the sample, or tell me the exact header text and I'll add it."
+                )
         else:
             export_df = result_df
 
