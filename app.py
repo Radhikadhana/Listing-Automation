@@ -135,7 +135,7 @@ ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS
 
 def clean_title(brand, gender, title, footwear_color, is_footwear):
     """Build title per spec section 1."""
-    title = title or ""
+    title = "" if title is None or (isinstance(title, float) and pd.isna(title)) else str(title)
     for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
 
