@@ -50,7 +50,6 @@ MASTER_COLS = {
     "footwear_color": "Footwear Color",
     "product_type": "Product Type",  # e.g. Trainers / Sandals / Slides / Apparel / Accessories
     "division": "Product Division",  # e.g. Footwear / Apparel / Accessories — primary signal for grouping logic
-    "rrp": "RRP",  # fallback price source if Tracker has no match for the article
 }
 
 TRACKER_COLS = {
@@ -332,15 +331,12 @@ def extract_productstory(raw_desc):
     return f"productstory={story_part}" if story_part else ""
 
 
-def build_size_chart_template_attribute(size_chart_label, template_map=None):
-    """Map the matched Size Chart Sheet label to its Template Attribute 1 string.
-    Uses the user-uploaded Size Chart Template mapping if provided, else falls back
-    to the built-in SIZECHART_TEMPLATE_MAP."""
+def build_size_chart_template_attribute(size_chart_label):
+    """Map the matched Size Chart Sheet label to its fixed Template Attribute 1 string."""
     if not size_chart_label:
         return ""
     label = str(size_chart_label).strip()
-    tmap = template_map if template_map else SIZECHART_TEMPLATE_MAP
-    return tmap.get(label, f"sizechart={label}" if label else "")
+    return SIZECHART_TEMPLATE_MAP.get(label, f"sizechart={label}" if label else "")
 
 
 # ======================================================================================
@@ -350,7 +346,6 @@ def build_size_chart_template_attribute(size_chart_label, template_map=None):
 def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
                         tracker_article_col="PIM Article", tracker_price_col=None,
                         master_cols=None, image_cols=None, sizechart_cols=None, category_cols=None,
-                        sizechart_template_map=None,
                         region="PH", marketplace="Lazada"):
     mc = master_cols or MASTER_COLS
     tc = {"article": tracker_article_col, "price_col": tracker_price_col}
@@ -404,15 +399,15 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
         total_variation_count = len(group_df)
         has_variants = total_variation_count > 1
 
-        template_attr_1 = build_size_chart_template_attribute(size_chart_label, sizechart_template_map)
+        template_attr_1 = build_size_chart_template_attribute(size_chart_label)
         template_attr_2 = extract_description_main(raw_desc)
         template_attr_3 = extract_productstory(raw_desc)
 
         base_row = {
             "Product Description 1": USER_TEMPLATE_NAME,
             "Title": title,
-            "Product Name": title,
             "Description": desc,
+            "Total variation": total_variation_count,
             "Currency Code": currency_code,
             "Quantity": 0,
             "Category ID": category_id,
@@ -435,23 +430,6 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
             "Marketplace": marketplace,
         }
 
-        def variation2_value(uk_size_val, division_val):
-            """Apparel/Accessories get an 'Int:'/'UK:' prefix on Variation 2; Footwear stays as-is."""
-            div = str(division_val).strip().lower()
-            val = str(uk_size_val).strip()
-            if div == "apparel":
-                return f"Int: {val}"
-            if div == "accessories":
-                return f"UK: {val}"
-            return val
-
-        def rrp_value(article_val, sku_row):
-            """Price from Tracker via Article; fall back to an RRP column on the Master Sheet if Tracker has no match."""
-            price = get_price(article_val, tracker_df, tc["article"], tc["price_col"])
-            if price in (None, "") and "rrp" in mc and mc["rrp"]:
-                price = sku_row.get(mc["rrp"], "")
-            return price
-
         if not has_variants:
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
@@ -461,13 +439,10 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
             row = {
                 "Row Type": "Parent",
                 **base_row,
-                "Total variation": total_variation_count,
-                "Seller SKU": sku,
-                "Parent SKU": sku,
                 "SKU": sku,
-                "RRP": rrp_value(article, single),
+                "RRP": get_price(article, tracker_df, tc["article"], tc["price_col"]),
                 "Variation 1": single.get(mc["color_name"], ""),
-                "Variation 2": variation2_value(uk_size, division),
+                "Variation 2": uk_size,
                 "Product Specification 2": f"sku.color_family={color_family}",
                 "Product Specification 3": f"sku.size={uk_size}",
                 "Stock": 0,
@@ -476,13 +451,9 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
             rows.append(row)
             continue
 
-        parent_sku = group_df.iloc[0].get(mc["sku"], "")
         parent_row = {
             "Row Type": "Parent",
             **base_row,
-            "Total variation": total_variation_count,
-            "Seller SKU": "",
-            "Parent SKU": parent_sku,
             "Variation 1": "Color Family",  # axis name, not a value — per spec
             "Variation 2": "Size",  # axis name, not a value — per spec
             "Stock": 0,
@@ -507,12 +478,10 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
                 "Row Type": "Child",
                 **base_row,
                 "Description": "",  # child rows: SKU-specific only
-                "Seller SKU": sku,
-                "Parent SKU": parent_sku,
                 "SKU": sku,
-                "RRP": rrp_value(article, rec),
+                "RRP": get_price(article, tracker_df, tc["article"], tc["price_col"]),
                 "Variation 1": rec.get(mc["color_name"], ""),
-                "Variation 2": variation2_value(uk_size, division),
+                "Variation 2": uk_size,
                 "Product Specification 2": f"sku.color_family={color_family}",
                 "Product Specification 3": f"sku.size={uk_size}",
                 "Stock": 0,
@@ -656,10 +625,6 @@ if master_file is not None:
         master_cols_map["care"] = mapped_select("Care", master_cols_available, ["care"], "mc_care", allow_none=True)
         master_cols_map["care_label"] = mapped_select("Care Label", master_cols_available, ["care label"], "mc_care_label", allow_none=True)
         master_cols_map["footwear_color"] = mapped_select("Footwear Color", master_cols_available, ["footwear color"], "mc_footwear_color", allow_none=True)
-        master_cols_map["rrp"] = mapped_select(
-            "RRP (fallback if not found in Tracker)", master_cols_available, ["rrp", "price"], "mc_rrp", allow_none=True,
-            help_text="Used only when the Tracker Sheet has no matching Article price.",
-        )
 
 
 # --- Tracker column pickers (Article column + Price column) ---
@@ -737,7 +702,6 @@ if _image_preview_df is not None:
 
 # --- Size Chart Sheet column mapping ---
 sizechart_cols_map = dict(SIZE_CHART_COLS)
-sizechart_template_map = None
 if size_chart_file is not None:
     _sizechart_preview_df = load_any(size_chart_file)
     size_chart_file.seek(0)
@@ -753,30 +717,6 @@ if size_chart_file is not None:
         sizechart_cols_map["size_chart_url"] = mapped_select(
             "Size Chart URL column", sizechart_cols_available, ["size chart url", "url"], "sizechart_url_col"
         )
-
-    sizechart_template_file = st.file_uploader(
-        "Size Chart Template (.xlsx/.csv) — optional, maps each Size Chart label to its Template Attribute 1 value",
-        type=["xlsx", "csv"], key="sizechart_template",
-        help="Two columns: one matching the Category/Title label above, one holding the exact Template Attribute 1 string to use.",
-    )
-    if sizechart_template_file is not None:
-        _tmpl_df = load_any(sizechart_template_file)
-        tmpl_cols_available = list(_tmpl_df.columns)
-        tcol_a, tcol_b = st.columns(2)
-        with tcol_a:
-            tmpl_label_col = mapped_select(
-                "Size Chart label column", tmpl_cols_available, ["category", "title", "label"], "tmpl_label_col"
-            )
-        with tcol_b:
-            tmpl_value_col = mapped_select(
-                "Template Attribute 1 value column", tmpl_cols_available, ["template attribute", "template"], "tmpl_value_col"
-            )
-        sizechart_template_map = {
-            str(r[tmpl_label_col]).strip(): str(r[tmpl_value_col]).strip()
-            for _, r in _tmpl_df.iterrows()
-            if pd.notna(r[tmpl_label_col])
-        }
-        st.success(f"Loaded {len(sizechart_template_map)} size chart template mappings.")
 
 
 # --- Category Sheet column mapping ---
@@ -823,7 +763,6 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     image_cols=image_cols_map,
                     sizechart_cols=sizechart_cols_map,
                     category_cols=category_cols_map,
-                    sizechart_template_map=sizechart_template_map,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
