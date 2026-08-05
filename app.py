@@ -1,45 +1,90 @@
+"""
+Marketplace Bulk Upload Sheet Generator
+========================================
+Streamlit app that takes:
+  - Master Input Sheet (product data)
+  - Tracker Sheet (pricing)
+  - Image Sheet (SKU -> image URLs)
+  - Size Chart Sheet (category/title -> size chart image URL)
+  - Category Sheet (title keyword -> category ID)
+  - Sample Upload Format (defines exact output columns/order)
+
+...and produces a marketplace-ready bulk upload file (Parent/Child rows,
+cleaned titles & descriptions, variations, images, category IDs, size charts,
+prices, defaults, stock=0, shipping, product specification).
+
+IMPORTANT: Column name constants below are BEST-GUESS based on the spec you
+provided. Once you share your actual sheets, update the CONFIG section
+(search for "ADJUST ME") to match your real column headers exactly.
+"""
+
 import io
 import re
+import json
+from collections import OrderedDict
+
 import pandas as pd
 import numpy as np
 import streamlit as st
 
 # ======================================================================================
-# EXACT 68 HEADERS FROM OUTPUT SHEET
+# CONFIG — ADJUST ME to match your real column headers once real files are shared
 # ======================================================================================
 
-OUTPUT_COLUMNS = [
-    'Graas SKU', 'Status', 'Remarks', 'Seller SKU', 'Product Name', 'Product Name (English)',
-    'Product Description 1', 'Product Description 2', 'Product Description 3',
-    'Product Description(English) 1', 'Product Description(English) 2', 'Product Description(English) 3',
-    'Total variation', 'Variation 1', 'Variation 2', 'Variation 3', 'Short Description',
-    'Product Highlights \n(English)', 'SRP', 'Sale Start Date', 'Sale End Date', 'RRP',
-    'Currency Code', 'Quantity', 'Product Image URL(s)', 'Category ID', 'Tax Class', 'Brand',
-    'Model', 'Warranty Type', 'Package Weight (kg)', 'Package Height(cm)', 'Package Length(cm)',
-    'Package Width(cm)', "What's in the Box", "What's in the Box(English)", 'Size chart Image URL',
-    'Product Specification 1', 'Product Specification 2', 'Product Specification 3',
-    'Product Specification 4', 'Product Specification 5', 'Product Specification 6',
-    'Product Specification 7', 'Product Specification 8', 'Product Specification 9',
-    'Product Specification 10', 'Product Specification 11', 'Product Specification 12',
-    'Product Specification 13', 'Product Specification 14', 'Product Specification 15',
-    'Product Specification 16', 'Product Specification 17', 'Product Specification 18',
-    'Product Specification 19', 'Product Specification 20', 'Product Specification 21',
-    'Product Specification 22', 'Product Specification 23', 'Product Specification 24',
-    'Product Specification 25', 'Template Attribute 1', 'Template Attribute 2',
-    'Template Attribute 3', 'Template Attribute 4', 'Template Attribute 5', 'Post As Non Variant'
-]
+MASTER_COLS = {
+    "style_no": "Style Number",
+    "color_no": "Color Number",
+    "brand": "Brand",
+    "gender": "Gender",
+    "title": "Regional Display Name",
+    "color_family": "Color Family",
+    "color_name": "Color Name",
+    "size": "Size",
+    "uk_size": "UK Size",
+    "sku": "SKU",
+    "article": "Article Number",  # PIM Article Number column in the Master Sheet — used to look up price in Tracker Sheet (Tracker only has Article, not SKU)
+    "description": "Description",
+    "care": "Care",
+    "care_label": "Care Label",
+    "category_hint": "Category",  # optional, else derived from title
+    "footwear_color": "Footwear Color",
+    "product_type": "Product Type",  # e.g. Trainers / Sandals / Slides / Apparel / Accessories
+    "division": "Product Division",  # e.g. Footwear / Apparel / Accessories — primary signal for grouping logic
+    "rrp": "RRP",  # fallback price source if Tracker has no match for the article
+}
 
-TITLE_REPLACEMENTS = [
-    (r"\bTrainers\b", "Shoes"),
-    (r"\bSandals\b", "Sports Sandals"),
-    (r"\bSlides\b", "Slides Slippers"),
-]
+TRACKER_COLS = {
+    "article": "PIM Article",  # Tracker Sheet only has an Article column, not SKU
+    "price_col": None,  # set at runtime via the Streamlit dropdown (user selects the price column)
+}
 
-ALPHA_SIZE_ORDER = [
-    "3XS", "XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "XXXL", "4XL", "XXXXL", "OSFA", "Youth"
-]
+IMAGE_SHEET_COLS = {
+    "article": "Article No",  # Image Sheet is keyed by Article Number, not SKU
+    "image_cols": ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6", "Image 7", "Image 8", "Image 9"],
+}
 
-DEFAULT_SIZECHART_TEMPLATE_MAP = {
+SIZE_CHART_COLS = {
+    "category_or_title": "Category",
+    "size_chart_url": "Size Chart URL",
+}
+
+CATEGORY_SHEET_COLS = {
+    "keyword": "Title Keyword",
+    "category_id": "Category ID",
+}
+
+# Region -> Currency Code mapping
+REGION_CURRENCY = {
+    "SG": "SGD",
+    "MY": "MYR",
+    "PH": "PHP",
+}
+
+MARKETPLACES = ["Lazada", "Shopee", "Zalora", "Tiktok"]
+REGIONS = ["SG", "MY", "PH"]
+
+# sizechart value (from Size Chart Sheet match) -> fixed Template Attribute 1 string
+SIZECHART_TEMPLATE_MAP = {
     "Infant Clothing": "sizechart=Infant Clothing",
     "Kids Clothing": "sizechart=Kids Clothing",
     "Women Tops": "sizechart=Women Tops",
@@ -57,356 +102,830 @@ DEFAULT_SIZECHART_TEMPLATE_MAP = {
     "Men Socks": "sizechart=Men Socks",
 }
 
+USER_TEMPLATE_NAME = "userTemplate-PumaAccessories"
+
+# Default values (spec section 7)
+DEFAULTS = {
+    "Currency": "PHP",
+    "Condition": "Default",
+    "Warranty": "No Warranty",
+    "Package Weight": 0.5,
+    "Package Height": 15,
+    "Package Length": 12,
+    "Package Width": 12,
+    "Shipping Service": "Standard Local",
+    "Shipping Fee": 40.00,
+    "Product Specification": "Brand: PUMA",
+}
+
+# Title word replacements (spec section 1)
+TITLE_REPLACEMENTS = OrderedDict([
+    (r"\bTrainers\b", "Shoes"),
+    (r"\bSandals\b", "Sports Sandals"),
+    (r"\bSlides\b", "Slides Slippers"),
+])
+
+# Size sort order (spec section 3)
+ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OSFA", "Youth"]
+
+
 # ======================================================================================
-# HELPER FUNCTIONS (CRASH-PROOF)
+# HELPERS
 # ======================================================================================
 
-def safe_str(val):
-    """Safely converts any cell value to a clean string without raising errors."""
-    if val is None or pd.isna(val):
-        return ""
-    s = str(val).strip()
-    return "" if s.lower() in ("nan", "none", "<na>") else s
+HEADER_SYNONYMS = {
+    "row type": "Row Type", "rowtype": "Row Type",
+    "seller sku": "Seller SKU", "sellersku": "Seller SKU",
+    "parent sku": "Parent SKU", "parentsku": "Parent SKU",
+    "sku": "SKU",
+    "product name": "Product Name", "productname": "Product Name",
+    "title": "Title",
+    "description": "Description",
+    "total variation": "Total variation", "total variations": "Total variation",
+    "currency code": "Currency Code", "currency": "Currency Code",
+    "quantity": "Quantity", "stock": "Stock",
+    "category id": "Category ID", "categoryid": "Category ID",
+    "tax class": "Tax Class",
+    "brand": "Brand",
+    "model": "Model",
+    "warranty type": "Warranty Type", "warranty": "Warranty Type",
+    "package weight (kg)": "Package Weight (kg)", "package weight": "Package Weight (kg)",
+    "package height(cm)": "Package Height(cm)", "package height": "Package Height(cm)",
+    "package length(cm)": "Package Length(cm)", "package length": "Package Length(cm)",
+    "package width(cm)": "Package Width(cm)", "package width": "Package Width(cm)",
+    "what's in the box": "What's in the Box", "whats in the box": "What's in the Box",
+    "rrp": "RRP", "price": "RRP",
+    "variation 1": "Variation 1", "variation1": "Variation 1",
+    "variation 2": "Variation 2", "variation2": "Variation 2",
+    "images": "Images", "image": "Images",
+    "size chart image url": "size chart Image URL", "size chart url": "size chart Image URL",
+    "template attribute 1": "Template Attribute 1",
+    "template attribute 2": "Template Attribute 2",
+    "template attribute 3": "Template Attribute 3",
+    "product specification 1": "Product Specification 1",
+    "product specification 2": "Product Specification 2",
+    "product specification 3": "Product Specification 3",
+    "shipping service details": "Shipping Service Details", "shipping service": "Shipping Service Details",
+    "region": "Region",
+    "marketplace": "Marketplace",
+    "product description 1": "Product Description 1",
+}
 
-def is_footwear(division, product_type):
-    div = safe_str(division).lower()
-    ptype = safe_str(product_type).lower()
-    return div == "footwear" or ptype in ["footwear", "shoes", "trainers", "sandals", "slides"]
 
-def clean_title(brand, gender, regional_display_name, color_name, footwear):
-    title = safe_str(regional_display_name)
-    for pattern, repl in TITLE_REPLACEMENTS:
+def _normalize_header(h):
+    return re.sub(r"[^a-z0-9]+", " ", str(h).strip().lower()).strip()
+
+
+def align_to_sample_headers(result_df, sample_columns):
+    """Build an export dataframe matching the sample's exact header text/order,
+    even when result_df's internal column names differ in wording/spacing/case."""
+    normalized_result = {_normalize_header(c): c for c in result_df.columns}
+    export_df = pd.DataFrame(index=result_df.index)
+    unmatched = []
+    for sample_col in sample_columns:
+        norm = _normalize_header(sample_col)
+        source_col = None
+        if norm in normalized_result:
+            source_col = normalized_result[norm]
+        elif norm in HEADER_SYNONYMS and _normalize_header(HEADER_SYNONYMS[norm]) in normalized_result:
+            source_col = normalized_result[_normalize_header(HEADER_SYNONYMS[norm])]
+        if source_col is not None:
+            export_df[sample_col] = result_df[source_col]
+        else:
+            export_df[sample_col] = ""
+            unmatched.append(sample_col)
+    return export_df, unmatched
+
+
+def clean_title(brand, gender, title, footwear_color, is_footwear):
+    """Build title per spec section 1."""
+    title = "" if title is None or (isinstance(title, float) and pd.isna(title)) else str(title)
+    for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
 
     parts = ["[NEW]"]
-    if safe_str(brand):
-        parts.append(safe_str(brand))
-    if safe_str(gender).lower() == "unisex":
+    if brand:
+        parts.append(str(brand).strip())
+    if gender and str(gender).strip().lower() == "unisex":
         parts.append("Unisex")
     if title:
         parts.append(title.strip())
-    if footwear and safe_str(color_name):
-        parts.append(safe_str(color_name))
+    if is_footwear and footwear_color:
+        parts.append(str(footwear_color).strip())
 
+    # remove duplicate consecutive / anywhere words (case-insensitive), preserve first occurrence
     seen = set()
     deduped = []
     for word in " ".join(parts).split():
         key = word.lower()
-        if key in seen and key != "[new]":
+        if key in seen and key not in ("[new]",):
             continue
         seen.add(key)
         deduped.append(word)
     return " ".join(deduped).strip()
 
-def clean_description(raw_desc, style_number, care=None, care_label=None):
-    desc = safe_str(raw_desc)
 
+def clean_description(raw_desc, style_number, care=None, care_label=None):
+    """Clean description per spec section 4."""
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
+        raw_desc = ""
+    desc = str(raw_desc)
+
+    # Remove <h3>PRODUCT STORY</h3> (and variations: extra spaces, lowercase tags, etc.)
     desc = re.sub(r"<h3[^>]*>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
+    # Safety net: also strip a bare "product story" heading text if it slipped through without a clean tag pair
     desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
+
+    # Convert <h3>DETAILS</h3> (and variations) -> two newlines + "DETAILS"
     desc = re.sub(r"<h3[^>]*>\s*DETAILS\s*</h3>", "\n\nDETAILS", desc, flags=re.IGNORECASE)
-    desc = re.sub(r"<h3[^>]*>\s*FEATURES\s*(&|\+)\s*BENEFITS\s*</h3>", "\n\nFEATURES & BENEFITS", desc, flags=re.IGNORECASE)
-    desc = re.sub(r"<li[^>]*>", "\r\n- ", desc, flags=re.IGNORECASE)
+    # Convert <h3>FEATURES & BENEFITS</h3> / <h3>FEATURES + BENEFITS</h3> (and variations) -> two newlines + heading
+    desc = re.sub(
+        r"<h3[^>]*>\s*FEATURES\s*(&|\+)\s*BENEFITS\s*</h3>",
+        "\n\nFEATURES & BENEFITS",
+        desc,
+        flags=re.IGNORECASE,
+    )
+
+    # Convert <li> to bullet; </li> is stripped out entirely (no injected newline) per spec
+    desc = re.sub(r"<li[^>]*>", "\n- ", desc, flags=re.IGNORECASE)
     desc = re.sub(r"</li>", "", desc, flags=re.IGNORECASE)
 
+    # Remove specified tags
     for tag in [r"<br\s*/?>", r"</br>", r"<ul[^>]*>", r"</ul>", r"<p[^>]*>", r"</p>"]:
-        desc = re.sub(tag, "", desc, flags=re.IGNORECASE)
+        desc = re.sub(tag, "\n", desc, flags=re.IGNORECASE)
 
+    # Strip any remaining stray HTML tags (safety net)
     desc = re.sub(r"<[^>]+>", "", desc)
 
+    # Trim extra spaces, collapse runs of blank lines down to a single blank line
+    # (preserves the intentional blank line before DETAILS / FEATURES & BENEFITS headings)
     raw_lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in desc.splitlines()]
-    lines = [ln for ln in raw_lines if ln]
-    desc = "\n".join(lines).strip()
+    lines = []
+    prev_blank = False
+    for ln in raw_lines:
+        if ln == "":
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        lines.append(ln)
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    desc = "\n".join(lines)
 
-    tail = [f"- Style : {safe_str(style_number)}"]
-    if safe_str(care):
-        tail.append(f"CARE\n{safe_str(care)}")
-    if safe_str(care_label):
-        tail.append(f"CARE LABEL\n{safe_str(care_label)}")
+    # Append Style, CARE, CARE LABEL
+    tail = [f"Style : {style_number}"]
+    if care and str(care).strip().lower() not in ("nan", ""):
+        tail.append(f"CARE\n{str(care).strip()}")
+    if care_label and str(care_label).strip().lower() not in ("nan", ""):
+        tail.append(f"CARE LABEL\n{str(care_label).strip()}")
 
-    return desc + "\n\n" + "\n\n".join(tail)
+    desc = desc + "\n\n" + "\n\n".join(tail)
+    return desc.strip()
 
-def extract_description_content(raw_desc):
-    desc = safe_str(raw_desc)
-    if not desc:
+
+def is_footwear(division, product_type=None):
+    """Determine footwear-ness primarily via Product Division (spec: 'using Product Division checks'),
+    falling back to Product Type keyword matching if Division is blank/unavailable."""
+    div = str(division).strip().lower() if division not in (None, "") and not (isinstance(division, float) and pd.isna(division)) else ""
+    if div:
+        return div == "footwear"
+    if not product_type:
+        return False
+    return str(product_type).strip().lower() in ("footwear", "shoes", "trainers", "sandals", "slides")
+
+
+def size_sort_key(size_val):
+    """Sort key supporting alpha size order or ascending numeric."""
+    s = str(size_val).strip().upper()
+    if s in ALPHA_SIZE_ORDER:
+        return (0, ALPHA_SIZE_ORDER.index(s), 0)
+    try:
+        num = float(re.sub(r"[^\d.]", "", s))
+        return (1, 0, num)
+    except (ValueError, TypeError):
+        return (2, 0, s)
+
+
+def match_category_id(title, category_df, keyword_col, id_col):
+    if category_df is None or category_df.empty:
         return ""
-    desc = re.sub(r"<h3[^>]*>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
-    split_match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS|DETAILS)", desc, flags=re.IGNORECASE)
-    main_part = desc[:split_match.start()] if split_match else desc
+    title_lower = str(title).lower()
+    best_match = ""
+    best_len = 0
+    for _, row in category_df.iterrows():
+        kw = str(row.get(keyword_col, "")).strip().lower()
+        if kw and kw in title_lower and len(kw) > best_len:
+            best_match = row.get(id_col, "")
+            best_len = len(kw)
+    return best_match
+
+
+def match_size_chart(title, size_chart_df, key_col, url_col):
+    if size_chart_df is None or size_chart_df.empty:
+        return ""
+    title_lower = str(title).lower()
+    best_match = ""
+    best_len = 0
+    for _, row in size_chart_df.iterrows():
+        kw = str(row.get(key_col, "")).strip().lower()
+        if kw and kw in title_lower and len(kw) > best_len:
+            best_match = row.get(url_col, "")
+            best_len = len(kw)
+    return best_match
+
+
+def get_images_for_article(article, image_df, article_col, image_cols):
+    """Look up images in the Image Sheet by Article Number (the Image Sheet is
+    keyed by Article No, not SKU, per spec)."""
+    if image_df is None or image_df.empty or not article or str(article).strip() == "":
+        return []
+    row = image_df[image_df[article_col].astype(str).str.strip() == str(article).strip()]
+    if row.empty:
+        return []
+    row = row.iloc[0]
+    imgs = []
+    for c in image_cols:
+        if c in row and pd.notna(row[c]) and str(row[c]).strip():
+            imgs.append(str(row[c]).strip())
+    return imgs
+
+
+def get_price(article, tracker_df, article_col, price_col):
+    """Look up price in the Tracker Sheet by Article Number.
+
+    The Tracker Sheet only contains a PIM Article column (no SKU), so the
+    Master Sheet's Article Number for a given SKU must be resolved first and
+    passed in here as `article`.
+    """
+    if tracker_df is None or tracker_df.empty or not article or str(article).strip() == "":
+        return ""
+    row = tracker_df[tracker_df[article_col].astype(str).str.strip() == str(article).strip()]
+    if row.empty:
+        return ""
+    val = row.iloc[0].get(price_col, "")
+    return val
+
+
+def extract_description_main(raw_desc):
+    """Extract the plain main description content (before DETAILS/FEATURES sections) for Template Attribute 2."""
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
+        return ""
+    desc = str(raw_desc)
+    desc = re.sub(r"<p>\s*product\s*story\s*</p>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
+    split_pattern = re.compile(r"(FEATURES\s*(&|\+)\s*BENEFITS|DETAILS)", re.IGNORECASE)
+    match = split_pattern.search(desc)
+    main_part = desc[:match.start()] if match else desc
     main_part = main_part.strip()
-    if main_part and not main_part.lower().startswith("<p>"):
+    if main_part and not re.match(r"^\s*<p", main_part, flags=re.IGNORECASE):
         main_part = f"<p>{main_part}</p>"
-    return f"description={main_part}" if main_part else ""
+    return f"description={main_part}"
 
-def extract_features_and_details(raw_desc):
-    desc = safe_str(raw_desc)
-    if not desc:
+
+def extract_productstory(raw_desc):
+    """Extract FEATURES & BENEFITS + DETAILS sections (raw HTML) for Template Attribute 3."""
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
         return ""
+    desc = str(raw_desc)
     match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS.*)", desc, flags=re.IGNORECASE | re.DOTALL)
     story_part = match.group(1).strip() if match else ""
     return f"productstory={story_part}" if story_part else ""
 
-def size_sort_key(size_val):
-    s = safe_str(size_val).upper()
-    if not s:
-        return (3, 0, "")
-    if s in ALPHA_SIZE_ORDER:
-        return (0, ALPHA_SIZE_ORDER.index(s), s)
-    try:
-        num = float(re.sub(r"[^\d.]", "", s))
-        return (1, num, s)
-    except (ValueError, TypeError):
-        return (2, 0, s)
 
-def format_variation_2(size_val, division):
-    val = safe_str(size_val)
-    div = safe_str(division).lower()
-    if div == "footwear":
-        return f"UK: {val}"
-    return f"Int: {val}"
-
-def match_category_id(title, category_df):
-    if category_df is None or category_df.empty:
+def build_size_chart_template_attribute(size_chart_label, template_map=None):
+    """Map the matched Size Chart Sheet label to its Template Attribute 1 string.
+    Uses the user-uploaded Size Chart Template mapping if provided, else falls back
+    to the built-in SIZECHART_TEMPLATE_MAP."""
+    if not size_chart_label:
         return ""
-    title_lower = safe_str(title).lower()
-    best_match, best_len = "", 0
-    cat_col = 'Category' if 'Category' in category_df.columns else category_df.columns[0]
-    id_col = 'Category ID' if 'Category ID' in category_df.columns else (category_df.columns[1] if len(category_df.columns) > 1 else cat_col)
+    label = str(size_chart_label).strip()
+    tmap = template_map if template_map else SIZECHART_TEMPLATE_MAP
+    return tmap.get(label, f"sizechart={label}" if label else "")
 
-    for _, row in category_df.iterrows():
-        cat_name = safe_str(row.get(cat_col)).lower()
-        if cat_name and cat_name in title_lower and len(cat_name) > best_len:
-            best_match = row.get(id_col, '')
-            best_len = len(cat_name)
-    return safe_str(best_match) if best_match else safe_str(category_df.iloc[0].get(id_col, ''))
-
-def get_price(ean, price_df, price_col_letter=None):
-    if price_df is None or price_df.empty or not safe_str(ean):
-        return ""
-    
-    ean_str = safe_str(ean)
-    ean_col = [c for c in price_df.columns if "ean" in str(c).lower()]
-    search_col = ean_col[0] if ean_col else price_df.columns[0]
-
-    match = price_df[price_df[search_col].astype(str).str.strip() == ean_str]
-    if match.empty:
-        return ""
-
-    if price_col_letter:
-        col_idx = ord(price_col_letter.upper()) - ord('A')
-        if 0 <= col_idx < len(price_df.columns):
-            price_col_name = price_df.columns[col_idx]
-            val = match.iloc[0].get(price_col_name, "")
-            if safe_str(val):
-                return val
-
-    for p_col in ['sg-list-prices', 'sg-sale-prices', 'Price']:
-        if p_col in match.columns and safe_str(match.iloc[0].get(p_col)):
-            return match.iloc[0].get(p_col)
-
-    return ""
-
-def get_image_url(ean, image_df):
-    if image_df is None or image_df.empty or not safe_str(ean):
-        return ""
-    ean_str = safe_str(ean)
-    for col in image_df.columns:
-        if any(k in str(col).lower() for k in ["ean", "article", "sku"]):
-            match = image_df[image_df[col].astype(str).str.strip() == ean_str]
-            if not match.empty:
-                img_cols = [c for c in image_df.columns if any(k in str(c).lower() for k in ["image", "url"])]
-                imgs = [safe_str(match.iloc[0][c]) for c in img_cols if safe_str(match.iloc[0][c])]
-                return "; ".join(imgs)
-    return ""
 
 # ======================================================================================
-# CORE BUILD FUNCTION
+# CORE TRANSFORMATION
 # ======================================================================================
 
-def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_template_df, image_df, price_col_letter=None):
+def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
+                        tracker_article_col="PIM Article", tracker_price_col=None,
+                        master_cols=None, image_cols=None, sizechart_cols=None, category_cols=None,
+                        sizechart_template_map=None,
+                        region="PH", marketplace="Lazada"):
+    mc = master_cols or MASTER_COLS
+    tc = {"article": tracker_article_col, "price_col": tracker_price_col}
+    ic = image_cols or IMAGE_SHEET_COLS
+    sc = sizechart_cols or SIZE_CHART_COLS
+    cc = category_cols or CATEGORY_SHEET_COLS
+
+    currency_code = REGION_CURRENCY.get(region, "PHP")
+
     rows = []
 
-    def get_group_key(r):
-        div = r.get('ProductDivision', '')
-        ptype = r.get('ArticleType', '')
-        style = safe_str(r.get('StyleNo', ''))
-        if is_footwear(div, ptype):
-            color = safe_str(r.get('ColorNumber', ''))
-            return f"{style}__{color}"
-        return style
+    def group_key(r):
+        division = r.get(mc["division"], "") if "division" in mc else ""
+        ptype = r.get(mc["product_type"], "")
+        style = r.get(mc["style_no"], "")
+        if is_footwear(division, ptype):
+            color_no = r.get(mc["color_no"], "")
+            return f"{style}__{color_no}"
+        return f"{style}"
 
-    master_df['_group_key'] = master_df.apply(get_group_key, axis=1)
+    master_df = master_df.copy()
+    master_df["_group_key"] = master_df.apply(group_key, axis=1)
 
-    for group_key, group in master_df.groupby('_group_key', sort=False):
-        first = group.iloc[0]
-        division = first.get('ProductDivision', '')
-        ptype = first.get('ArticleType', '')
+    for group_key_val, group_df in master_df.groupby("_group_key", sort=False):
+        first = group_df.iloc[0]
+        division = first.get(mc["division"], "") if "division" in mc else ""
+        ptype = first.get(mc["product_type"], "")
         footwear = is_footwear(division, ptype)
 
-        brand = safe_str(first.get('Brand', 'PUMA')) or "PUMA"
-        gender = safe_str(first.get('Gender', ''))
-        display_name = safe_str(first.get('RegionalDisplayName', ''))
-        color_name = safe_str(first.get('ColorName', ''))
-        title = clean_title(brand, gender, display_name, color_name, footwear)
+        title = clean_title(
+            first.get(mc["brand"], ""),
+            first.get(mc["gender"], ""),
+            first.get(mc["title"], ""),
+            first.get(mc["footwear_color"], "") if footwear else "",
+            footwear,
+        )
 
-        style_no = safe_str(first.get('StyleNo', ''))
-        raw_desc = first.get('LongDescription', '')
-        cleaned_desc = clean_description(raw_desc, style_no, first.get('Care'), first.get('CareLabel'))
+        style_number = first.get(mc["style_no"], "")
+        raw_desc = first.get(mc["description"], "")
+        desc = clean_description(
+            raw_desc,
+            style_number,
+            first.get(mc["care"], None),
+            first.get(mc["care_label"], None),
+        )
 
-        category_id = match_category_id(title, category_df)
+        category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
+        size_chart_url = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["size_chart_url"])
+        size_chart_label = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["category_or_title"])
 
-        size_chart_url = ""
-        if size_chart_df is not None and not size_chart_df.empty:
-            sc_col = 'Size chart' if 'Size chart' in size_chart_df.columns else size_chart_df.columns[0]
-            size_chart_url = safe_str(size_chart_df.iloc[0].get(sc_col, ''))
+        total_variation_count = len(group_df)
+        has_variants = total_variation_count > 1
 
-        size_chart_template = ""
-        if size_template_df is not None and not size_template_df.empty:
-            st_col = 'Template' if 'Template' in size_template_df.columns else size_template_df.columns[0]
-            size_chart_template = safe_str(size_template_df.iloc[0].get(st_col, ''))
-        else:
-            size_chart_template = DEFAULT_SIZECHART_TEMPLATE_MAP.get(first.get('ArticleGroup', ''), "")
+        template_attr_1 = build_size_chart_template_attribute(size_chart_label, sizechart_template_map)
+        template_attr_2 = extract_description_main(raw_desc)
+        template_attr_3 = extract_productstory(raw_desc)
 
-        desc_content = extract_description_content(raw_desc)
-        features_details = extract_features_and_details(raw_desc)
+        base_row = {
+            "Product Description 1": USER_TEMPLATE_NAME,
+            "Title": title,
+            "Product Name": title,
+            "Description": desc,
+            "Currency Code": currency_code,
+            "Quantity": 0,
+            "Category ID": category_id,
+            "Tax Class": "Default",
+            "Brand": "PUMA",
+            "Model": style_number,
+            "Warranty Type": "No Warranty",
+            "Package Weight (kg)": 0.5,
+            "Package Height(cm)": 15,
+            "Package Length(cm)": 12,
+            "Package Width(cm)": 12,
+            "What's in the Box": f"1 X {title}",
+            "size chart Image URL": size_chart_url,
+            "Template Attribute 1": template_attr_1,
+            "Template Attribute 2": template_attr_2,
+            "Template Attribute 3": template_attr_3,
+            "Product Specification 1": "Brand:PUMA",
+            "Shipping Service Details": "Standard Local:40.00",
+            "Region": region,
+            "Marketplace": marketplace,
+        }
 
-        total_variants = len(group)
-        has_variants = total_variants > 1
+        def variation2_value(uk_size_val, division_val):
+            """Apparel/Accessories get an 'Int:'/'UK:' prefix on Variation 2; Footwear stays as-is."""
+            div = str(division_val).strip().lower()
+            val = str(uk_size_val).strip()
+            if div == "apparel":
+                return f"Int: {val}"
+            if div == "accessories":
+                return f"UK: {val}"
+            return val
 
-        base_map = {col: "" for col in OUTPUT_COLUMNS}
-        base_map['Product Name'] = title
-        base_map['Product Name (English)'] = title
-        base_map['Currency Code'] = "PHP"
-        base_map['Quantity'] = 0
-        base_map['Category ID'] = category_id
-        base_map['Tax Class'] = "default"
-        base_map['Brand'] = brand
-        base_map['Model'] = str(style_no)
-        base_map['Warranty Type'] = "No Warranty"
-        base_map['Package Weight (kg)'] = 0.5
-        base_map['Package Height(cm)'] = 15
-        base_map['Package Length(cm)'] = 12
-        base_map['Package Width(cm)'] = 12
-        base_map["What's in the Box"] = f"1 X {title}"
-        base_map["What's in the Box(English)"] = f"1 X {title}"
-        base_map['Size chart Image URL'] = size_chart_url
-        base_map['Product Specification 1'] = f"Brand: {brand}"
-        base_map['Template Attribute 1'] = size_chart_template
-        base_map['Template Attribute 2'] = desc_content
-        base_map['Template Attribute 3'] = features_details
-        base_map['Post As Non Variant'] = "No"
+        def rrp_value(article_val, sku_row):
+            """Price from Tracker via Article; fall back to an RRP column on the Master Sheet if Tracker has no match."""
+            price = get_price(article_val, tracker_df, tc["article"], tc["price_col"])
+            if price in (None, "") and "rrp" in mc and mc["rrp"]:
+                price = sku_row.get(mc["rrp"], "")
+            return price
 
-        # Parent Row
-        if has_variants:
-            parent_row = base_map.copy()
-            parent_sku = safe_str(first.get('EAN', ''))
-            parent_row['Graas SKU'] = parent_sku
-            parent_row['Seller SKU'] = parent_sku
-            parent_row['Product Description 1'] = cleaned_desc
-            parent_row['Product Description(English) 1'] = cleaned_desc
-            parent_row['Total variation'] = total_variants
-            parent_row['Variation 1'] = safe_str(first.get('SearchColorName', 'color_family')) or "color_family"
-            parent_row['Variation 2'] = "size"
-            
-            p_price = get_price(parent_sku, price_df, price_col_letter)
-            parent_row['RRP'] = p_price if p_price else first.get('Price', '')
-            parent_row['SRP'] = parent_row['RRP']
-            rows.append(parent_row)
+        if not has_variants:
+            single = group_df.iloc[0]
+            sku = single.get(mc["sku"], "")
+            article = single.get(mc["article"], "")
+            color_family = single.get(mc["color_family"], "")
+            uk_size = single.get(mc["uk_size"], "")
+            row = {
+                "Row Type": "Parent",
+                **base_row,
+                "Total variation": total_variation_count,
+                "Seller SKU": sku,
+                "Parent SKU": sku,
+                "SKU": sku,
+                "RRP": rrp_value(article, single),
+                "Variation 1": single.get(mc["color_name"], ""),
+                "Variation 2": variation2_value(uk_size, division),
+                "Product Specification 2": f"sku.color_family={color_family}",
+                "Product Specification 3": f"sku.size={uk_size}",
+                "Stock": 0,
+                "Images": "; ".join(get_images_for_article(article, image_df, ic["article"], ic["image_cols"])),
+            }
+            rows.append(row)
+            continue
 
-        # Child Rows
-        child_records = group.to_dict('records')
-        child_records.sort(key=lambda x: size_sort_key(x.get('SizeUK', '')))
+        parent_sku = group_df.iloc[0].get(mc["sku"], "")
+        parent_row = {
+            "Row Type": "Parent",
+            **base_row,
+            "Total variation": total_variation_count,
+            "Seller SKU": "",
+            "Parent SKU": parent_sku,
+            "Variation 1": "Color Family",  # axis name, not a value — per spec
+            "Variation 2": "Size",  # axis name, not a value — per spec
+            "Stock": 0,
+        }
+        rows.append(parent_row)
+
+        child_records = group_df.to_dict("records")
+        child_records.sort(
+            key=lambda r: (
+                str(r.get(mc["color_family"], "")),
+                str(r.get(mc["color_name"], "")),
+                size_sort_key(r.get(mc["uk_size"], "")),
+            )
+        )
 
         for rec in child_records:
-            child_row = base_map.copy()
-            ean = safe_str(rec.get('EAN', ''))
-            v1_color = safe_str(rec.get('ColorName', ''))
-            v2_size = format_variation_2(rec.get('SizeUK', ''), division)
-
-            price_val = get_price(ean, price_df, price_col_letter)
-            if not price_val:
-                price_val = rec.get('Price', '')
-
-            img_urls = get_image_url(ean, image_df)
-
-            child_row['Graas SKU'] = ean
-            child_row['Seller SKU'] = ean
-            child_row['Product Description 1'] = cleaned_desc
-            child_row['Product Description(English) 1'] = cleaned_desc
-            child_row['Total variation'] = total_variants if has_variants else 1
-            child_row['Variation 1'] = v1_color
-            child_row['Variation 2'] = v2_size
-            child_row['RRP'] = price_val
-            child_row['SRP'] = price_val
-            child_row['Product Image URL(s)'] = img_urls
-            child_row['Product Specification 2'] = f"sku.color_family={v1_color}"
-            child_row['Product Specification 3'] = f"sku.size={v2_size}"
-
+            sku = rec.get(mc["sku"], "")
+            article = rec.get(mc["article"], "")
+            color_family = rec.get(mc["color_family"], "")
+            uk_size = rec.get(mc["uk_size"], "")
+            child_row = {
+                "Row Type": "Child",
+                **base_row,
+                "Description": "",  # child rows: SKU-specific only
+                "Seller SKU": sku,
+                "Parent SKU": parent_sku,
+                "SKU": sku,
+                "RRP": rrp_value(article, rec),
+                "Variation 1": rec.get(mc["color_name"], ""),
+                "Variation 2": variation2_value(uk_size, division),
+                "Product Specification 2": f"sku.color_family={color_family}",
+                "Product Specification 3": f"sku.size={uk_size}",
+                "Stock": 0,
+                "Images": "; ".join(get_images_for_article(article, image_df, ic["article"], ic["image_cols"])),
+            }
             rows.append(child_row)
 
-    return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+    out_df = pd.DataFrame(rows)
+    return out_df
+
 
 # ======================================================================================
 # STREAMLIT UI
 # ======================================================================================
 
-st.set_page_config(page_title="Marketplace Bulk Upload Sheet Generator", layout="wide")
+st.set_page_config(page_title="Marketplace Upload Sheet Generator", layout="wide")
 st.title("🛒 Marketplace Bulk Upload Sheet Generator")
 
-st.markdown("### 📁 Upload Required Input Sheets")
+st.markdown(
+    """
+Upload your source sheets below. **Column mapping happens right here in the app** —
+after you upload a file, dropdowns will appear so you can match each field to your
+sheet's actual column headers. Nothing needs to be edited in `app.py`.
+"""
+)
 
+st.markdown("### 🌏 Region & Marketplace")
+rcol1, rcol2 = st.columns(2)
+with rcol1:
+    selected_region = st.selectbox("Region", options=REGIONS, index=REGIONS.index("PH"))
+with rcol2:
+    selected_marketplace = st.selectbox("Marketplace", options=MARKETPLACES, index=MARKETPLACES.index("Lazada"))
+
+st.markdown("### 📁 Source Files")
 col1, col2 = st.columns(2)
-
 with col1:
-    master_file = st.file_uploader("1. Master Input Sheet (.xlsx)", type=["xlsx"], key="master")
-    category_file = st.file_uploader("2. Category Sheet (.xlsx)", type=["xlsx"], key="category")
-    image_file = st.file_uploader("3. Image Sheet (.xlsx)", type=["xlsx"], key="image")
-
+    master_file = st.file_uploader("Master Input Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="master")
+    image_file = st.file_uploader("Image Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="images")
+    category_file = st.file_uploader("Category Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="category")
 with col2:
-    price_file = st.file_uploader("4. Price Sheet (.xlsx)", type=["xlsx"], key="price")
-    price_col_letter = st.text_input("Price Column Letter in Price Sheet (Optional, e.g. D or E)", value="")
-    size_chart_file = st.file_uploader("5. Size Chart Sheet (.xlsx)", type=["xlsx"], key="sizechart")
-    size_template_file = st.file_uploader("6. Size Chart Template (.xlsx)", type=["xlsx"], key="sizetemplate")
+    tracker_file = st.file_uploader("Tracker Sheet - pricing (.xlsx/.csv)", type=["xlsx", "csv"], key="tracker")
+    size_chart_file = st.file_uploader("Size Chart Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="sizechart")
+    sample_file = st.file_uploader("Sample Upload Format (.xlsx/.csv) — optional, defines exact output columns", type=["xlsx", "csv"], key="sample")
 
-def load_excel(f):
+
+def load_any(f):
     if f is None:
         return None
-    try:
-        return pd.read_excel(f)
-    except Exception as e:
-        st.error(f"Error reading {f.name}: {e}")
+    if f.name.lower().endswith(".csv"):
+        return pd.read_csv(f)
+    return pd.read_excel(f)
+
+
+def guess_index(options, keywords):
+    """Best-guess default index into `options` by substring match against `keywords`."""
+    options_str = [str(o) for o in options]
+    for kw in keywords:
+        for i, o in enumerate(options_str):
+            if kw.lower() in o.lower():
+                return i
+    return 0
+
+
+NONE_LABEL = "-- None / not in this sheet --"
+
+
+def mapped_select(label, options, keywords, key, allow_none=False, help_text=None):
+    opts = ([NONE_LABEL] + list(options)) if allow_none else list(options)
+    guessed = guess_index(options, keywords)
+    idx = (guessed + 1) if allow_none else guessed
+    choice = st.selectbox(label, options=opts, index=idx, key=key, help=help_text)
+    return None if (allow_none and choice == NONE_LABEL) else choice
+
+
+def excel_letter_to_index(letter):
+    """Convert an Excel-style column letter ('A', 'H', 'BW', ...) to a 0-based column index.
+    Returns None if the input isn't a valid letter sequence."""
+    letter = str(letter).strip().upper()
+    if not letter or not letter.isalpha():
         return None
+    idx = 0
+    for ch in letter:
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx - 1
 
-if st.button("🚀 Generate Output Sheet", type="primary"):
-    if master_file is None:
-        st.error("Please upload the Master Input Sheet.")
-    else:
-        try:
-            with st.spinner("Processing files and applying transformation rules..."):
-                master_df = load_excel(master_file)
-                price_df = load_excel(price_file)
-                category_df = load_excel(category_file)
-                size_chart_df = load_excel(size_chart_file)
-                size_template_df = load_excel(size_template_file)
-                image_df = load_excel(image_file)
 
-                out_df = build_upload_sheet(
-                    master_df, price_df, category_df, size_chart_df,
-                    size_template_df, image_df, price_col_letter
-                )
+def mapped_select_with_letter(label, df, keywords, key, help_text=None):
+    """Column picker with an optional 'or column letter' override, for sheets whose real
+    headers are blank/garbled (pandas shows these as 'Unnamed: N')."""
+    options = list(df.columns)
+    selected = mapped_select(label, options, keywords, key, help_text=help_text)
+    letter = st.text_input(
+        f"…or Excel column letter for \u201c{label}\u201d (only if the header above looks wrong, e.g. \u201cUnnamed: 8\u201d)",
+        value="", key=f"{key}_letter",
+    )
+    if letter.strip():
+        idx = excel_letter_to_index(letter)
+        if idx is not None and 0 <= idx < len(df.columns):
+            return df.columns[idx]
+        else:
+            st.warning(f"'{letter}' isn't a valid column letter for this sheet (it has {len(df.columns)} columns) — falling back to the dropdown selection.")
+    return selected
 
-            st.success(f"Successfully generated {len(out_df)} rows with standard 68 headers!")
-            st.dataframe(out_df, use_container_width=True)
 
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                out_df.to_excel(writer, index=False, sheet_name="Sheet1")
-            buffer.seek(0)
+# --- Master Sheet column mapping ---
+master_cols_map = dict(MASTER_COLS)  # fallback defaults
+if master_file is not None:
+    _master_preview_df = load_any(master_file)
+    master_file.seek(0)
+    master_cols_available = list(_master_preview_df.columns)
 
-            st.download_button(
-                "⬇️ Download Updated Bulk Output Sheet (.xlsx)",
-                data=buffer,
-                file_name="Output_Sheet_Updated.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    st.markdown("#### 📌 Master Sheet — Column Mapping")
+    st.caption("Match each field below to the actual column header in your Master Sheet.")
+    mm1, mm2, mm3 = st.columns(3)
+    with mm1:
+        master_cols_map["style_no"] = mapped_select("Style Number", master_cols_available, ["style"], "mc_style_no")
+        master_cols_map["color_no"] = mapped_select("Color Number", master_cols_available, ["color no", "colour no", "color number"], "mc_color_no", allow_none=True)
+        master_cols_map["division"] = mapped_select(
+            "Product Division", master_cols_available, ["division"], "mc_division", allow_none=True,
+            help_text="e.g. Footwear / Apparel / Accessories — used to decide grouping & UK-size handling. Leave as None if your sheet doesn't have this column; Product Type will be used instead.",
+        )
+        master_cols_map["brand"] = mapped_select("Brand", master_cols_available, ["brand"], "mc_brand")
+        master_cols_map["gender"] = mapped_select("Gender", master_cols_available, ["gender"], "mc_gender")
+        master_cols_map["title"] = mapped_select("Title / Display Name", master_cols_available, ["display name", "title"], "mc_title")
+        master_cols_map["product_type"] = mapped_select("Product Type", master_cols_available, ["product type"], "mc_product_type")
+    with mm2:
+        master_cols_map["color_family"] = mapped_select("Color Family", master_cols_available, ["color family", "colour family"], "mc_color_family")
+        master_cols_map["color_name"] = mapped_select("Color Name", master_cols_available, ["color name", "colour name"], "mc_color_name")
+        master_cols_map["size"] = mapped_select("Size", master_cols_available, ["size"], "mc_size")
+        master_cols_map["uk_size"] = mapped_select("UK Size", master_cols_available, ["uk size"], "mc_uk_size")
+        master_cols_map["sku"] = mapped_select_with_letter(
+            "SKU (EAN)", _master_preview_df, ["ean", "sku"], "mc_sku",
+            help_text="If your sheet calls this 'EAN' rather than 'SKU', that's fine — EAN is used as the SKU value.",
+        )
+        master_cols_map["article"] = mapped_select_with_letter(
+            "Article Number (Color No)", _master_preview_df, ["article", "color no", "colour no"], "mc_article",
+            help_text="Used to look up price in the Tracker Sheet (keyed by PIM Article, not SKU). If your sheet calls this 'Color No' rather than 'Article Number', that's fine — Color No is used as the Article Number for pricing.",
+        )
+    with mm3:
+        master_cols_map["description"] = mapped_select("Description", master_cols_available, ["description"], "mc_description")
+        master_cols_map["care"] = mapped_select("Care", master_cols_available, ["care"], "mc_care", allow_none=True)
+        master_cols_map["care_label"] = mapped_select("Care Label", master_cols_available, ["care label"], "mc_care_label", allow_none=True)
+        master_cols_map["footwear_color"] = mapped_select("Footwear Color", master_cols_available, ["footwear color"], "mc_footwear_color", allow_none=True)
+        master_cols_map["rrp"] = mapped_select(
+            "RRP (fallback if not found in Tracker)", master_cols_available, ["rrp", "price"], "mc_rrp", allow_none=True,
+            help_text="Used only when the Tracker Sheet has no matching Article price.",
+        )
+
+
+# --- Tracker column pickers (Article column + Price column) ---
+# The Tracker Sheet only contains a PIM Article column, not SKU. The Master
+# Sheet has both SKU and Article Number, so pricing is matched via:
+#   SKU (Master row) -> Article Number (Master row) -> Article (Tracker row) -> Price
+tracker_article_col = "PIM Article"
+tracker_price_col = None
+
+if tracker_file is not None:
+    _tracker_preview_df = load_any(tracker_file)
+    tracker_file.seek(0)  # reset pointer so it can be read again later
+    tracker_cols_available = list(_tracker_preview_df.columns)
+
+    st.markdown("#### 📌 Tracker Sheet — Column Selection")
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        tracker_article_col = mapped_select_with_letter(
+            "PIM Article column in Tracker Sheet", _tracker_preview_df, ["pim article", "article"],
+            "tracker_article_col_select",
+            help_text="The Tracker Sheet is keyed by PIM Article Number, not SKU. Select that column here.",
+        )
+    with tcol2:
+        tracker_price_col = mapped_select_with_letter(
+            "Price column to use (Original Price source)", _tracker_preview_df, ["original price", "price"],
+            "tracker_price_col_select",
+            help_text="Choose which column in the Tracker Sheet holds the price you want pulled into the upload sheet.",
+        )
+
+
+# --- Image Sheet column mapping ---
+image_cols_map = dict(IMAGE_SHEET_COLS)
+image_gsheet_url = st.text_input(
+    "Image Sheet Google Sheets link (optional — paste instead of/in addition to uploading a file)",
+    value="", key="image_gsheet_url",
+    help="If your Image Sheet lives in Google Sheets, paste a link that ends in /export?format=csv (File > Share > Publish, or swap /edit... for /export?format=csv on a shared link). Uploading a file above still works too.",
+)
+if image_gsheet_url.strip():
+    try:
+        _gs_url = image_gsheet_url.strip()
+        if "/export" not in _gs_url and "docs.google.com/spreadsheets" in _gs_url:
+            _gs_url = re.sub(r"/edit.*$", "", _gs_url) + "/export?format=csv"
+        _image_preview_df = pd.read_csv(_gs_url)
+        image_cols_available = list(_image_preview_df.columns)
+        st.success(f"Loaded {len(_image_preview_df)} rows from the Google Sheets link.")
+    except Exception as e:
+        st.error(f"Couldn't load that Google Sheets link ({e}). Make sure it's shared as 'Anyone with the link' and try again, or upload the file instead.")
+        _image_preview_df = None
+        image_cols_available = []
+elif image_file is not None:
+    _image_preview_df = load_any(image_file)
+    image_file.seek(0)
+    image_cols_available = list(_image_preview_df.columns)
+else:
+    _image_preview_df = None
+    image_cols_available = []
+
+if _image_preview_df is not None:
+    st.markdown("#### 📌 Image Sheet — Column Selection")
+    icol1, icol2 = st.columns(2)
+    with icol1:
+        image_cols_map["article"] = mapped_select_with_letter(
+            "Article No column in Image Sheet", _image_preview_df, ["article no", "article"], "image_article_col",
+            help_text="The Image Sheet is keyed by Article Number, matched at the SKU level (each SKU's Article Number is looked up here).",
+        )
+    with icol2:
+        default_image_cols = [c for c in image_cols_available if "image" in str(c).lower()]
+        image_cols_map["image_cols"] = st.multiselect(
+            "Image columns (select all that apply, in order)",
+            options=image_cols_available,
+            default=default_image_cols,
+            key="image_cols_select",
+        )
+
+
+# --- Size Chart Sheet column mapping ---
+sizechart_cols_map = dict(SIZE_CHART_COLS)
+sizechart_template_map = None
+if size_chart_file is not None:
+    _sizechart_preview_df = load_any(size_chart_file)
+    size_chart_file.seek(0)
+    sizechart_cols_available = list(_sizechart_preview_df.columns)
+
+    st.markdown("#### 📌 Size Chart Sheet — Column Selection")
+    scol1, scol2 = st.columns(2)
+    with scol1:
+        sizechart_cols_map["category_or_title"] = mapped_select(
+            "Category / Title match column", sizechart_cols_available, ["category", "title"], "sizechart_key_col"
+        )
+    with scol2:
+        sizechart_cols_map["size_chart_url"] = mapped_select(
+            "Size Chart URL column", sizechart_cols_available, ["size chart url", "url"], "sizechart_url_col"
+        )
+
+    sizechart_template_file = st.file_uploader(
+        "Size Chart Template (.xlsx/.csv) — optional, maps each Size Chart label to its Template Attribute 1 value",
+        type=["xlsx", "csv"], key="sizechart_template",
+        help="Two columns: one matching the Category/Title label above, one holding the exact Template Attribute 1 string to use.",
+    )
+    if sizechart_template_file is not None:
+        _tmpl_df = load_any(sizechart_template_file)
+        tmpl_cols_available = list(_tmpl_df.columns)
+        tcol_a, tcol_b = st.columns(2)
+        with tcol_a:
+            tmpl_label_col = mapped_select(
+                "Size Chart label column", tmpl_cols_available, ["category", "title", "label"], "tmpl_label_col"
             )
-        except Exception as err:
-            st.error(f"An error occurred during processing: {err}")
+        with tcol_b:
+            tmpl_value_col = mapped_select(
+                "Template Attribute 1 value column", tmpl_cols_available, ["template attribute", "template"], "tmpl_value_col"
+            )
+        sizechart_template_map = {
+            str(r[tmpl_label_col]).strip(): str(r[tmpl_value_col]).strip()
+            for _, r in _tmpl_df.iterrows()
+            if pd.notna(r[tmpl_label_col])
+        }
+        st.success(f"Loaded {len(sizechart_template_map)} size chart template mappings.")
+
+
+# --- Category Sheet column mapping ---
+category_cols_map = dict(CATEGORY_SHEET_COLS)
+if category_file is not None:
+    _category_preview_df = load_any(category_file)
+    category_file.seek(0)
+    category_cols_available = list(_category_preview_df.columns)
+
+    st.markdown("#### 📌 Category Sheet — Column Selection")
+    ccol1, ccol2 = st.columns(2)
+    with ccol1:
+        category_cols_map["keyword"] = mapped_select(
+            "Title Keyword column", category_cols_available, ["keyword", "title"], "category_keyword_col"
+        )
+    with ccol2:
+        category_cols_map["category_id"] = mapped_select(
+            "Category ID column", category_cols_available, ["category id", "category"], "category_id_col"
+        )
+
+
+if st.button("🚀 Generate Upload Sheet", type="primary"):
+    if master_file is None:
+        st.error("Master Input Sheet is required.")
+    elif tracker_file is not None and tracker_price_col is None:
+        st.error("Please select a Price column from the Tracker Sheet.")
+    else:
+        with st.spinner("Processing..."):
+            master_df = load_any(master_file)
+            tracker_df = load_any(tracker_file)
+            image_df = _image_preview_df if image_gsheet_url.strip() else load_any(image_file)
+            size_chart_df = load_any(size_chart_file)
+            category_df = load_any(category_file)
+            sample_df = load_any(sample_file)
+
+            output_columns = list(sample_df.columns) if sample_df is not None else None
+
+            try:
+                result_df = build_upload_sheet(
+                    master_df, tracker_df, image_df, size_chart_df, category_df,
+                    tracker_article_col=tracker_article_col,
+                    tracker_price_col=tracker_price_col,
+                    master_cols=master_cols_map,
+                    image_cols=image_cols_map,
+                    sizechart_cols=sizechart_cols_map,
+                    category_cols=category_cols_map,
+                    sizechart_template_map=sizechart_template_map,
+                    region=selected_region,
+                    marketplace=selected_marketplace,
+                )
+            except KeyError as e:
+                st.error(
+                    f"Column mapping mismatch: {e}. "
+                    "Double-check the column mapping dropdowns above match your actual sheet headers, then rerun."
+                )
+                st.stop()
+
+        st.success(f"Generated {len(result_df)} rows ({(result_df['Row Type']=='Parent').sum()} parent, "
+                   f"{(result_df['Row Type']=='Child').sum()} child).")
+        st.dataframe(result_df, use_container_width=True)
+
+        # Build the exact-format export separately from the full working table above,
+        # so a Sample Upload Format without a "Row Type" column (or any other internal
+        # column) never breaks the on-screen preview/stats.
+        if output_columns:
+            export_df, unmatched_headers = align_to_sample_headers(result_df, output_columns)
+            if unmatched_headers:
+                st.warning(
+                    "Couldn't confidently match these Sample Upload Format headers to a generated "
+                    f"column (left blank in the export): {', '.join(unmatched_headers)}. "
+                    "Check spelling/wording against the sample, or tell me the exact header text and I'll add it."
+                )
+        else:
+            export_df = result_df
+
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            export_df.to_excel(writer, index=False, sheet_name="Upload")
+        buffer.seek(0)
+
+        st.download_button(
+            "⬇️ Download Upload Sheet (.xlsx)",
+            data=buffer,
+            file_name="marketplace_upload_sheet.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+else:
+    st.info("Upload your files and click **Generate Upload Sheet** to begin.")
