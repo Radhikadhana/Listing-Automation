@@ -29,19 +29,16 @@ OUTPUT_COLUMNS = [
     'Template Attribute 3', 'Template Attribute 4', 'Template Attribute 5', 'Post As Non Variant'
 ]
 
-# Replacement map for titles
 TITLE_REPLACEMENTS = [
     (r"\bTrainers\b", "Shoes"),
     (r"\bSandals\b", "Sports Sandals"),
     (r"\bSlides\b", "Slides Slippers"),
 ]
 
-# Alpha size sorting sequence
 ALPHA_SIZE_ORDER = [
     "3XS", "XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "XXXL", "4XL", "XXXXL", "OSFA", "Youth"
 ]
 
-# Default Sizechart Template Mapping fallback
 DEFAULT_SIZECHART_TEMPLATE_MAP = {
     "Infant Clothing": "sizechart=Infant Clothing",
     "Kids Clothing": "sizechart=Kids Clothing",
@@ -61,30 +58,36 @@ DEFAULT_SIZECHART_TEMPLATE_MAP = {
 }
 
 # ======================================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (CRASH-PROOF)
 # ======================================================================================
 
+def safe_str(val):
+    """Safely converts any cell value to a clean string without raising errors."""
+    if val is None or pd.isna(val):
+        return ""
+    s = str(val).strip()
+    return "" if s.lower() in ("nan", "none", "<na>") else s
+
 def is_footwear(division, product_type):
-    div = str(division).strip().lower() if pd.notna(division) else ""
-    ptype = str(product_type).strip().lower() if pd.notna(product_type) else ""
+    div = safe_str(division).lower()
+    ptype = safe_str(product_type).lower()
     return div == "footwear" or ptype in ["footwear", "shoes", "trainers", "sandals", "slides"]
 
 def clean_title(brand, gender, regional_display_name, color_name, footwear):
-    title = str(regional_display_name) if pd.notna(regional_display_name) else ""
+    title = safe_str(regional_display_name)
     for pattern, repl in TITLE_REPLACEMENTS:
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
 
     parts = ["[NEW]"]
-    if pd.notna(brand) and str(brand).strip():
-        parts.append(str(brand).strip())
-    if pd.notna(gender) and str(gender).strip().lower() == "unisex":
+    if safe_str(brand):
+        parts.append(safe_str(brand))
+    if safe_str(gender).lower() == "unisex":
         parts.append("Unisex")
     if title:
         parts.append(title.strip())
-    if footwear and pd.notna(color_name) and str(color_name).strip():
-        parts.append(str(color_name).strip())
+    if footwear and safe_str(color_name):
+        parts.append(safe_str(color_name))
 
-    # Remove duplicate words while keeping first occurrence
     seen = set()
     deduped = []
     for word in " ".join(parts).split():
@@ -96,12 +99,8 @@ def clean_title(brand, gender, regional_display_name, color_name, footwear):
     return " ".join(deduped).strip()
 
 def clean_description(raw_desc, style_number, care=None, care_label=None):
-    if raw_desc is None or pd.isna(raw_desc):
-        desc = ""
-    else:
-        desc = str(raw_desc)
+    desc = safe_str(raw_desc)
 
-    # 1. Clean HTML tags per specification
     desc = re.sub(r"<h3[^>]*>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
     desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
     desc = re.sub(r"<h3[^>]*>\s*DETAILS\s*</h3>", "\n\nDETAILS", desc, flags=re.IGNORECASE)
@@ -118,19 +117,18 @@ def clean_description(raw_desc, style_number, care=None, care_label=None):
     lines = [ln for ln in raw_lines if ln]
     desc = "\n".join(lines).strip()
 
-    # Appending Metadata
-    tail = [f"- Style : {style_number}"]
-    if care and pd.notna(care) and str(care).strip().lower() not in ("nan", ""):
-        tail.append(f"CARE\n{str(care).strip()}")
-    if care_label and pd.notna(care_label) and str(care_label).strip().lower() not in ("nan", ""):
-        tail.append(f"CARE LABEL\n{str(care_label).strip()}")
+    tail = [f"- Style : {safe_str(style_number)}"]
+    if safe_str(care):
+        tail.append(f"CARE\n{safe_str(care)}")
+    if safe_str(care_label):
+        tail.append(f"CARE LABEL\n{safe_str(care_label)}")
 
     return desc + "\n\n" + "\n\n".join(tail)
 
 def extract_description_content(raw_desc):
-    if raw_desc is None or pd.isna(raw_desc):
+    desc = safe_str(raw_desc)
+    if not desc:
         return ""
-    desc = str(raw_desc)
     desc = re.sub(r"<h3[^>]*>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
     split_match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS|DETAILS)", desc, flags=re.IGNORECASE)
     main_part = desc[:split_match.start()] if split_match else desc
@@ -140,26 +138,28 @@ def extract_description_content(raw_desc):
     return f"description={main_part}" if main_part else ""
 
 def extract_features_and_details(raw_desc):
-    if raw_desc is None or pd.isna(raw_desc):
+    desc = safe_str(raw_desc)
+    if not desc:
         return ""
-    desc = str(raw_desc)
     match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS.*)", desc, flags=re.IGNORECASE | re.DOTALL)
     story_part = match.group(1).strip() if match else ""
     return f"productstory={story_part}" if story_part else ""
 
 def size_sort_key(size_val):
-    s = str(size_val).strip().upper() if pd.notna(size_val) else ""
+    s = safe_str(size_val).upper()
+    if not s:
+        return (3, 0, "")
     if s in ALPHA_SIZE_ORDER:
-        return (0, ALPHA_SIZE_ORDER.index(s), 0)
+        return (0, ALPHA_SIZE_ORDER.index(s), s)
     try:
         num = float(re.sub(r"[^\d.]", "", s))
-        return (1, 0, num)
+        return (1, num, s)
     except (ValueError, TypeError):
         return (2, 0, s)
 
 def format_variation_2(size_val, division):
-    val = str(size_val).strip() if pd.notna(size_val) else ""
-    div = str(division).strip().lower() if pd.notna(division) else ""
+    val = safe_str(size_val)
+    div = safe_str(division).lower()
     if div == "footwear":
         return f"UK: {val}"
     return f"Int: {val}"
@@ -167,52 +167,59 @@ def format_variation_2(size_val, division):
 def match_category_id(title, category_df):
     if category_df is None or category_df.empty:
         return ""
-    title_lower = str(title).lower()
+    title_lower = safe_str(title).lower()
     best_match, best_len = "", 0
+    cat_col = 'Category' if 'Category' in category_df.columns else category_df.columns[0]
+    id_col = 'Category ID' if 'Category ID' in category_df.columns else (category_df.columns[1] if len(category_df.columns) > 1 else cat_col)
+
     for _, row in category_df.iterrows():
-        cat_name = str(row.get('Category', '')).strip().lower()
+        cat_name = safe_str(row.get(cat_col)).lower()
         if cat_name and cat_name in title_lower and len(cat_name) > best_len:
-            best_match = row.get('Category ID', '')
+            best_match = row.get(id_col, '')
             best_len = len(cat_name)
-    return best_match if best_match else (category_df.iloc[0].get('Category ID', '') if 'Category ID' in category_df.columns else "")
+    return safe_str(best_match) if best_match else safe_str(category_df.iloc[0].get(id_col, ''))
 
 def get_price(ean, price_df, price_col_letter=None):
-    if price_df is None or price_df.empty or pd.isna(ean):
+    if price_df is None or price_df.empty or not safe_str(ean):
         return ""
     
-    # If user selected a specific column letter for price in Price Sheet
+    ean_str = safe_str(ean)
+    ean_col = [c for c in price_df.columns if "ean" in str(c).lower()]
+    search_col = ean_col[0] if ean_col else price_df.columns[0]
+
+    match = price_df[price_df[search_col].astype(str).str.strip() == ean_str]
+    if match.empty:
+        return ""
+
     if price_col_letter:
         col_idx = ord(price_col_letter.upper()) - ord('A')
         if 0 <= col_idx < len(price_df.columns):
             price_col_name = price_df.columns[col_idx]
-            match = price_df[price_df['EAN'].astype(str).str.strip() == str(ean).strip()]
-            if not match.empty:
-                val = match.iloc[0].get(price_col_name, "")
-                if pd.notna(val):
-                    return val
+            val = match.iloc[0].get(price_col_name, "")
+            if safe_str(val):
+                return val
 
-    # Default lookup logic
-    match = price_df[price_df['EAN'].astype(str).str.strip() == str(ean).strip()]
-    if not match.empty:
-        for p_col in ['sg-list-prices', 'sg-sale-prices', 'Price']:
-            if p_col in match.columns and pd.notna(match.iloc[0].get(p_col)):
-                return match.iloc[0].get(p_col)
+    for p_col in ['sg-list-prices', 'sg-sale-prices', 'Price']:
+        if p_col in match.columns and safe_str(match.iloc[0].get(p_col)):
+            return match.iloc[0].get(p_col)
+
     return ""
 
 def get_image_url(ean, image_df):
-    if image_df is None or image_df.empty or pd.isna(ean):
+    if image_df is None or image_df.empty or not safe_str(ean):
         return ""
+    ean_str = safe_str(ean)
     for col in image_df.columns:
-        if "ean" in col.lower() or "article" in col.lower() or "sku" in col.lower():
-            match = image_df[image_df[col].astype(str).str.strip() == str(ean).strip()]
+        if any(k in str(col).lower() for k in ["ean", "article", "sku"]):
+            match = image_df[image_df[col].astype(str).str.strip() == ean_str]
             if not match.empty:
-                img_cols = [c for c in image_df.columns if "image" in c.lower() or "url" in c.lower()]
-                imgs = [str(match.iloc[0][c]).strip() for c in img_cols if pd.notna(match.iloc[0][c])]
+                img_cols = [c for c in image_df.columns if any(k in str(c).lower() for k in ["image", "url"])]
+                imgs = [safe_str(match.iloc[0][c]) for c in img_cols if safe_str(match.iloc[0][c])]
                 return "; ".join(imgs)
     return ""
 
 # ======================================================================================
-# CORE GENERATION PROCESS
+# CORE BUILD FUNCTION
 # ======================================================================================
 
 def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_template_df, image_df, price_col_letter=None):
@@ -221,9 +228,9 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
     def get_group_key(r):
         div = r.get('ProductDivision', '')
         ptype = r.get('ArticleType', '')
-        style = str(r.get('StyleNo', '')).strip()
+        style = safe_str(r.get('StyleNo', ''))
         if is_footwear(div, ptype):
-            color = str(r.get('ColorNumber', '')).strip()
+            color = safe_str(r.get('ColorNumber', ''))
             return f"{style}__{color}"
         return style
 
@@ -235,13 +242,13 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
         ptype = first.get('ArticleType', '')
         footwear = is_footwear(division, ptype)
 
-        brand = first.get('Brand', 'PUMA')
-        gender = first.get('Gender', '')
-        display_name = first.get('RegionalDisplayName', '')
-        color_name = first.get('ColorName', '')
+        brand = safe_str(first.get('Brand', 'PUMA')) or "PUMA"
+        gender = safe_str(first.get('Gender', ''))
+        display_name = safe_str(first.get('RegionalDisplayName', ''))
+        color_name = safe_str(first.get('ColorName', ''))
         title = clean_title(brand, gender, display_name, color_name, footwear)
 
-        style_no = first.get('StyleNo', '')
+        style_no = safe_str(first.get('StyleNo', ''))
         raw_desc = first.get('LongDescription', '')
         cleaned_desc = clean_description(raw_desc, style_no, first.get('Care'), first.get('CareLabel'))
 
@@ -249,11 +256,13 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
 
         size_chart_url = ""
         if size_chart_df is not None and not size_chart_df.empty:
-            size_chart_url = size_chart_df.iloc[0].get('Size chart', '')
+            sc_col = 'Size chart' if 'Size chart' in size_chart_df.columns else size_chart_df.columns[0]
+            size_chart_url = safe_str(size_chart_df.iloc[0].get(sc_col, ''))
 
         size_chart_template = ""
         if size_template_df is not None and not size_template_df.empty:
-            size_chart_template = size_template_df.iloc[0].get('Template', '')
+            st_col = 'Template' if 'Template' in size_template_df.columns else size_template_df.columns[0]
+            size_chart_template = safe_str(size_template_df.iloc[0].get(st_col, ''))
         else:
             size_chart_template = DEFAULT_SIZECHART_TEMPLATE_MAP.get(first.get('ArticleGroup', ''), "")
 
@@ -263,7 +272,6 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
         total_variants = len(group)
         has_variants = total_variants > 1
 
-        # Common Base Map for 68 Output Columns
         base_map = {col: "" for col in OUTPUT_COLUMNS}
         base_map['Product Name'] = title
         base_map['Product Name (English)'] = title
@@ -281,43 +289,37 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
         base_map["What's in the Box"] = f"1 X {title}"
         base_map["What's in the Box(English)"] = f"1 X {title}"
         base_map['Size chart Image URL'] = size_chart_url
-        base_map['Product Specification 1'] = "Brand: PUMA"
+        base_map['Product Specification 1'] = f"Brand: {brand}"
         base_map['Template Attribute 1'] = size_chart_template
         base_map['Template Attribute 2'] = desc_content
         base_map['Template Attribute 3'] = features_details
         base_map['Post As Non Variant'] = "No"
 
-        # -------------------------------------------------------------------------
-        # PARENT ROW INSERTION (If variants exist)
-        # -------------------------------------------------------------------------
+        # Parent Row
         if has_variants:
             parent_row = base_map.copy()
-            parent_sku = str(first.get('EAN', ''))
+            parent_sku = safe_str(first.get('EAN', ''))
             parent_row['Graas SKU'] = parent_sku
             parent_row['Seller SKU'] = parent_sku
             parent_row['Product Description 1'] = cleaned_desc
             parent_row['Product Description(English) 1'] = cleaned_desc
             parent_row['Total variation'] = total_variants
-            parent_row['Variation 1'] = str(first.get('SearchColorName', 'color_family'))
+            parent_row['Variation 1'] = safe_str(first.get('SearchColorName', 'color_family')) or "color_family"
             parent_row['Variation 2'] = "size"
             
-            # Parent RRP price fallback
             p_price = get_price(parent_sku, price_df, price_col_letter)
             parent_row['RRP'] = p_price if p_price else first.get('Price', '')
             parent_row['SRP'] = parent_row['RRP']
-            
             rows.append(parent_row)
 
-        # -------------------------------------------------------------------------
-        # CHILD ROWS / SINGLE ROW
-        # -------------------------------------------------------------------------
+        # Child Rows
         child_records = group.to_dict('records')
         child_records.sort(key=lambda x: size_sort_key(x.get('SizeUK', '')))
 
         for rec in child_records:
             child_row = base_map.copy()
-            ean = str(rec.get('EAN', ''))
-            v1_color = str(rec.get('ColorName', ''))
+            ean = safe_str(rec.get('EAN', ''))
+            v1_color = safe_str(rec.get('ColorName', ''))
             v2_size = format_variation_2(rec.get('SizeUK', ''), division)
 
             price_val = get_price(ean, price_df, price_col_letter)
@@ -344,7 +346,7 @@ def build_upload_sheet(master_df, price_df, category_df, size_chart_df, size_tem
     return pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
 
 # ======================================================================================
-# STREAMLIT USER INTERFACE
+# STREAMLIT UI
 # ======================================================================================
 
 st.set_page_config(page_title="Marketplace Bulk Upload Sheet Generator", layout="wide")
@@ -366,36 +368,45 @@ with col2:
     size_template_file = st.file_uploader("6. Size Chart Template (.xlsx)", type=["xlsx"], key="sizetemplate")
 
 def load_excel(f):
-    return pd.read_excel(f) if f is not None else None
+    if f is None:
+        return None
+    try:
+        return pd.read_excel(f)
+    except Exception as e:
+        st.error(f"Error reading {f.name}: {e}")
+        return None
 
 if st.button("🚀 Generate Output Sheet", type="primary"):
     if master_file is None:
-        st.error("Master Input Sheet is required.")
+        st.error("Please upload the Master Input Sheet.")
     else:
-        with st.spinner("Processing files and applying transformation rules..."):
-            master_df = load_excel(master_file)
-            price_df = load_excel(price_file)
-            category_df = load_excel(category_file)
-            size_chart_df = load_excel(size_chart_file)
-            size_template_df = load_excel(size_template_file)
-            image_df = load_excel(image_file)
+        try:
+            with st.spinner("Processing files and applying transformation rules..."):
+                master_df = load_excel(master_file)
+                price_df = load_excel(price_file)
+                category_df = load_excel(category_file)
+                size_chart_df = load_excel(size_chart_file)
+                size_template_df = load_excel(size_template_file)
+                image_df = load_excel(image_file)
 
-            out_df = build_upload_sheet(
-                master_df, price_df, category_df, size_chart_df,
-                size_template_df, image_df, price_col_letter
+                out_df = build_upload_sheet(
+                    master_df, price_df, category_df, size_chart_df,
+                    size_template_df, image_df, price_col_letter
+                )
+
+            st.success(f"Successfully generated {len(out_df)} rows with standard 68 headers!")
+            st.dataframe(out_df, use_container_width=True)
+
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                out_df.to_excel(writer, index=False, sheet_name="Sheet1")
+            buffer.seek(0)
+
+            st.download_button(
+                "⬇️ Download Updated Bulk Output Sheet (.xlsx)",
+                data=buffer,
+                file_name="Output_Sheet_Updated.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-
-        st.success(f"Successfully generated {len(out_df)} rows with exactly 68 standard output columns!")
-        st.dataframe(out_df, use_container_width=True)
-
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            out_df.to_excel(writer, index=False, sheet_name="Sheet1")
-        buffer.seek(0)
-
-        st.download_button(
-            "⬇️ Download Updated Bulk Output Sheet (.xlsx)",
-            data=buffer,
-            file_name="Output_Sheet_Updated.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        except Exception as err:
+            st.error(f"An error occurred during processing: {err}")
