@@ -2,16 +2,26 @@
 Marketplace Bulk Upload Sheet Generator
 ========================================
 Streamlit app that takes:
-  - Master Input Sheet (product data)
-  - Tracker Sheet (pricing)
+  - Master Input Sheet (product data, including price)
   - Image Sheet (SKU -> image URLs)
-  - Size Chart Sheet (category/title -> size chart image URL)
+  - Size Chart Template Sheet (category/title -> size chart template attribute)
   - Category Sheet (title keyword -> category ID)
-  - Sample Upload Format (defines exact output columns/order)
+  - Sample Upload Format (defines exact output columns/order — REQUIRED)
 
 ...and produces a marketplace-ready bulk upload file (Parent/Child rows,
-cleaned titles & descriptions, variations, images, category IDs, size charts,
-prices, defaults, stock=0, shipping, product specification).
+cleaned titles & descriptions, variations, images, category IDs, size chart
+template values, prices, defaults, stock=0, shipping, product specification).
+
+CHANGES IN THIS VERSION:
+  - Tracker Sheet (separate pricing file) REMOVED. Price is now read straight
+    from a price column on the Master Input Sheet.
+  - Size Chart Sheet REPLACED with a Size Chart Template Sheet: instead of
+    matching free-text title keywords to a URL, this matches a Size Chart Key
+    (built from Age Group / Gender / Article Group / Article Type, same as
+    before) to a Template Attribute 1 string you define directly in that sheet.
+  - Output columns now STRICTLY follow the Sample Upload Format headers.
+    The Sample Upload Format file is now REQUIRED (not optional) — the app
+    will not guess an output layout on its own.
 
 IMPORTANT: Column name constants below are BEST-GUESS based on the spec you
 provided. Once you share your actual sheets, update the CONFIG section
@@ -20,7 +30,6 @@ provided. Once you share your actual sheets, update the CONFIG section
 
 import io
 import re
-import json
 from collections import OrderedDict
 
 import pandas as pd
@@ -42,17 +51,16 @@ MASTER_COLS = {
     "size": "Size",
     "uk_size": "UK Size",
     "sku": "SKU",
+    "price": "Price",              # NEW: price now lives on the Master Sheet directly
     "description": "Description",
     "care": "Care",
     "care_label": "Care Label",
-    "category_hint": "Category",  # optional, else derived from title
+    "category_hint": "Category",   # optional, else derived from title
     "footwear_color": "Footwear Color",
     "product_type": "Product Type",  # e.g. Trainers / Sandals / Slides / Apparel / Accessories
-}
-
-TRACKER_COLS = {
-    "sku": "SKU",
-    "price_col": None,  # set at runtime via the Streamlit dropdown (user selects the price column)
+    "age_group": "Age Group",
+    "article_group": "Article Group",
+    "article_type": "Article Type",
 }
 
 IMAGE_SHEET_COLS = {
@@ -60,9 +68,13 @@ IMAGE_SHEET_COLS = {
     "image_cols": ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6", "Image 7", "Image 8", "Image 9"],
 }
 
-SIZE_CHART_COLS = {
-    "category_or_title": "Category",
-    "size_chart_url": "Size Chart URL",
+# Size Chart TEMPLATE sheet (replaces old free-text Size Chart Sheet).
+# Expected columns: a lookup key (Age Group-Gender-Article Group-Article Type,
+# same composite key used elsewhere) and the literal Template Attribute 1 value
+# to place on the row — no keyword matching, no URL, just a direct key lookup.
+SIZE_CHART_TEMPLATE_COLS = {
+    "key": "Size Chart Key",                 # e.g. "Adult-Men-Tops-Tee"
+    "template_attribute_1": "Template Attribute 1",  # literal string to output, e.g. "sizechart=Men Tops"
 }
 
 CATEGORY_SHEET_COLS = {
@@ -79,25 +91,6 @@ REGION_CURRENCY = {
 
 MARKETPLACES = ["Lazada", "Shopee", "Zalora", "Tiktok"]
 REGIONS = ["SG", "MY", "PH"]
-
-# sizechart value (from Size Chart Sheet match) -> fixed Template Attribute 1 string
-SIZECHART_TEMPLATE_MAP = {
-    "Infant Clothing": "sizechart=Infant Clothing",
-    "Kids Clothing": "sizechart=Kids Clothing",
-    "Women Tops": "sizechart=Women Tops",
-    "Men Tops": "sizechart=Men Tops",
-    "Mens Btm": "sizechart=Mens Btm",
-    "Women Skirt": "sizechart=Women Skirt",
-    "Boys Tops": "sizechart=Boys Tops",
-    "Girls Tops": "sizechart=Girls Tops",
-    "Women Btm": "sizechart=Women Btm",
-    "Women Footwear": "sizechart=Women Footwear",
-    "Cap": "sizechart=Cap",
-    "Kids Footwear": "sizechart=Kids Footwear",
-    "Mens Footwear": "sizechart=Mens Footwear",
-    "Women Bra": "sizechart=Women Bra",
-    "Men Socks": "sizechart=Men Socks",
-}
 
 USER_TEMPLATE_NAME = "userTemplate-PumaAccessories"
 
@@ -235,18 +228,26 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
-def match_size_chart(title, size_chart_df, key_col, url_col):
-    if size_chart_df is None or size_chart_df.empty:
+def build_size_chart_key(age_group, gender, article_group, article_type):
+    """Composite lookup key used against the Size Chart Template Sheet."""
+    parts = [age_group, gender, article_group, article_type]
+    return "-".join(str(p).strip() if p is not None else "" for p in parts)
+
+
+def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
+    """
+    Direct key lookup (NOT keyword/title matching) against the Size Chart
+    Template Sheet. Returns the literal Template Attribute 1 string, or ""
+    if the key isn't found.
+    """
+    if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
-    title_lower = str(title).lower()
-    best_match = ""
-    best_len = 0
-    for _, row in size_chart_df.iterrows():
-        kw = str(row.get(key_col, "")).strip().lower()
-        if kw and kw in title_lower and len(kw) > best_len:
-            best_match = row.get(url_col, "")
-            best_len = len(kw)
-    return best_match
+    match = size_chart_template_df[
+        size_chart_template_df[key_col].astype(str).str.strip() == str(size_chart_key).strip()
+    ]
+    if match.empty:
+        return ""
+    return match.iloc[0].get(attr_col, "")
 
 
 def get_images_for_sku(sku, image_df, sku_col, image_cols):
@@ -263,14 +264,11 @@ def get_images_for_sku(sku, image_df, sku_col, image_cols):
     return imgs
 
 
-def get_price(sku, tracker_df, sku_col, price_col):
-    if tracker_df is None or tracker_df.empty:
+def get_price(row, price_col):
+    """Price now comes straight from the Master Sheet row (no Tracker Sheet lookup)."""
+    if price_col not in row or pd.isna(row.get(price_col, None)):
         return ""
-    row = tracker_df[tracker_df[sku_col].astype(str) == str(sku)]
-    if row.empty:
-        return ""
-    val = row.iloc[0].get(price_col, "")
-    return val
+    return row.get(price_col, "")
 
 
 def extract_description_main(raw_desc):
@@ -299,25 +297,16 @@ def extract_productstory(raw_desc):
     return f"productstory={story_part}" if story_part else ""
 
 
-def build_size_chart_template_attribute(size_chart_label):
-    """Map the matched Size Chart Sheet label to its fixed Template Attribute 1 string."""
-    if not size_chart_label:
-        return ""
-    label = str(size_chart_label).strip()
-    return SIZECHART_TEMPLATE_MAP.get(label, f"sizechart={label}" if label else "")
-
-
 # ======================================================================================
 # CORE TRANSFORMATION
 # ======================================================================================
 
-def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_df,
-                        output_columns=None, tracker_sku_col="SKU", tracker_price_col=None,
+def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
+                        output_columns, price_col,
                         region="PH", marketplace="Lazada"):
     mc = MASTER_COLS
-    tc = {"sku": tracker_sku_col, "price_col": tracker_price_col}
     ic = IMAGE_SHEET_COLS
-    sc = SIZE_CHART_COLS
+    sct = SIZE_CHART_TEMPLATE_COLS
     cc = CATEGORY_SHEET_COLS
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
@@ -358,15 +347,23 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
         )
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
-        size_chart_url = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["size_chart_url"])
-        size_chart_label = match_size_chart(title, size_chart_df, sc["category_or_title"], sc["category_or_title"])
+
+        # --- Size Chart Template lookup (replaces old free-text Size Chart Sheet) ---
+        size_chart_key = build_size_chart_key(
+            first.get(mc["age_group"], ""),
+            first.get(mc["gender"], ""),
+            first.get(mc["article_group"], ""),
+            first.get(mc["article_type"], ""),
+        )
+        template_attr_1 = match_size_chart_template(
+            size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+        )
+
+        template_attr_2 = extract_description_main(raw_desc)
+        template_attr_3 = extract_productstory(raw_desc)
 
         total_variation_count = len(group_df)
         has_variants = total_variation_count > 1
-
-        template_attr_1 = build_size_chart_template_attribute(size_chart_label)
-        template_attr_2 = extract_description_main(raw_desc)
-        template_attr_3 = extract_productstory(raw_desc)
 
         base_row = {
             "Product Description 1": USER_TEMPLATE_NAME,
@@ -385,7 +382,6 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
             "Package Length(cm)": 12,
             "Package Width(cm)": 12,
             "What's in the Box": f"1 X {title}",
-            "size chart Image URL": size_chart_url,
             "Template Attribute 1": template_attr_1,
             "Template Attribute 2": template_attr_2,
             "Template Attribute 3": template_attr_3,
@@ -402,7 +398,7 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
                 "Row Type": "Parent",
                 **base_row,
                 "SKU": sku,
-                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "RRP": get_price(single, price_col),
                 "Variation 1": single.get(mc["color_name"], ""),
                 "Variation 2": uk_size,
                 "Product Specification 1": f"sku.color_family={color_family}",
@@ -438,7 +434,7 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
                 **base_row,
                 "Description": "",  # child rows: SKU-specific only
                 "SKU": sku,
-                "RRP": get_price(sku, tracker_df, tc["sku"], tc["price_col"]),
+                "RRP": get_price(rec, price_col),
                 "Variation 1": rec.get(mc["color_name"], ""),
                 "Variation 2": uk_size,
                 "Product Specification 1": f"sku.color_family={color_family}",
@@ -450,11 +446,12 @@ def build_upload_sheet(master_df, tracker_df, image_df, size_chart_df, category_
 
     out_df = pd.DataFrame(rows)
 
-    if output_columns:
-        for col in output_columns:
-            if col not in out_df.columns:
-                out_df[col] = ""
-        out_df = out_df[output_columns]
+    # Output STRICTLY follows the Sample Upload Format headers — no extra columns,
+    # no reordering, missing ones filled blank.
+    for col in output_columns:
+        if col not in out_df.columns:
+            out_df[col] = ""
+    out_df = out_df[output_columns]
 
     return out_df
 
@@ -469,9 +466,15 @@ st.title("🛒 Marketplace Bulk Upload Sheet Generator")
 st.markdown(
     """
 Upload your source sheets below. Column-name mapping is configured at the top of
-`app.py` (`MASTER_COLS`, `TRACKER_COLS`, etc.) — **edit those constants to match
+`app.py` (`MASTER_COLS`, `IMAGE_SHEET_COLS`, etc.) — **edit those constants to match
 your real spreadsheet headers** before running, since this app was built without
 seeing your actual files.
+
+**Note:** the Tracker Sheet has been removed — price is now read directly from a
+column on the Master Input Sheet. The Size Chart Sheet has been replaced with a
+Size Chart Template Sheet (direct key → Template Attribute 1 lookup, no keyword
+matching). The **Sample Upload Format is now required** — output columns/order will
+always match it exactly.
 """
 )
 
@@ -489,9 +492,13 @@ with col1:
     image_file = st.file_uploader("Image Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="images")
     category_file = st.file_uploader("Category Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="category")
 with col2:
-    tracker_file = st.file_uploader("Tracker Sheet - pricing (.xlsx/.csv)", type=["xlsx", "csv"], key="tracker")
-    size_chart_file = st.file_uploader("Size Chart Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="sizechart")
-    sample_file = st.file_uploader("Sample Upload Format (.xlsx/.csv) — optional, defines exact output columns", type=["xlsx", "csv"], key="sample")
+    size_chart_template_file = st.file_uploader(
+        "Size Chart Template Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="sizecharttemplate"
+    )
+    sample_file = st.file_uploader(
+        "Sample Upload Format (.xlsx/.csv) — REQUIRED, defines exact output columns",
+        type=["xlsx", "csv"], key="sample",
+    )
 
 
 def load_any(f):
@@ -502,62 +509,55 @@ def load_any(f):
     return pd.read_excel(f)
 
 
-# --- Tracker column pickers (SKU column + Price column) ---
-tracker_sku_col = "SKU"
-tracker_price_col = None
+# --- Master Sheet price column picker ---
+price_col = MASTER_COLS["price"]
 
-if tracker_file is not None:
-    _tracker_preview_df = load_any(tracker_file)
-    tracker_file.seek(0)  # reset pointer so it can be read again later
-    tracker_cols_available = list(_tracker_preview_df.columns)
+if master_file is not None:
+    _master_preview_df = load_any(master_file)
+    master_file.seek(0)  # reset pointer so it can be read again later
+    master_cols_available = list(_master_preview_df.columns)
 
-    st.markdown("#### 📌 Tracker Sheet — Column Selection")
-    tcol1, tcol2 = st.columns(2)
-    with tcol1:
-        tracker_sku_col = st.selectbox(
-            "SKU column in Tracker Sheet",
-            options=tracker_cols_available,
-            index=tracker_cols_available.index("SKU") if "SKU" in tracker_cols_available else 0,
-            key="tracker_sku_col_select",
-        )
-    with tcol2:
-        tracker_price_col = st.selectbox(
-            "Price column to use (Original Price source)",
-            options=tracker_cols_available,
-            key="tracker_price_col_select",
-            help="Choose which column in the Tracker Sheet holds the price you want pulled into the upload sheet.",
-        )
+    st.markdown("#### 📌 Master Sheet — Price Column Selection")
+    default_price_idx = (
+        master_cols_available.index(price_col) if price_col in master_cols_available else 0
+    )
+    price_col = st.selectbox(
+        "Price column in Master Input Sheet",
+        options=master_cols_available,
+        index=default_price_idx,
+        key="master_price_col_select",
+        help="Choose which column in the Master Input Sheet holds the price to pull into the upload sheet.",
+    )
 
 
 if st.button("🚀 Generate Upload Sheet", type="primary"):
     if master_file is None:
         st.error("Master Input Sheet is required.")
-    elif tracker_file is not None and tracker_price_col is None:
-        st.error("Please select a Price column from the Tracker Sheet.")
+    elif sample_file is None:
+        st.error("Sample Upload Format is required — it defines the exact output columns/order.")
     else:
         with st.spinner("Processing..."):
             master_df = load_any(master_file)
-            tracker_df = load_any(tracker_file)
             image_df = load_any(image_file)
-            size_chart_df = load_any(size_chart_file)
+            size_chart_template_df = load_any(size_chart_template_file)
             category_df = load_any(category_file)
             sample_df = load_any(sample_file)
 
-            output_columns = list(sample_df.columns) if sample_df is not None else None
+            output_columns = list(sample_df.columns)
 
             try:
                 result_df = build_upload_sheet(
-                    master_df, tracker_df, image_df, size_chart_df, category_df, output_columns,
-                    tracker_sku_col=tracker_sku_col,
-                    tracker_price_col=tracker_price_col,
+                    master_df, image_df, size_chart_template_df, category_df, output_columns,
+                    price_col=price_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
             except KeyError as e:
                 st.error(
                     f"Column mapping mismatch: {e}. "
-                    "Please edit the CONFIG constants (MASTER_COLS, TRACKER_COLS, etc.) "
-                    "at the top of app.py to match your actual sheet's column headers, then rerun."
+                    "Please edit the CONFIG constants (MASTER_COLS, IMAGE_SHEET_COLS, "
+                    "SIZE_CHART_TEMPLATE_COLS, CATEGORY_SHEET_COLS) at the top of app.py "
+                    "to match your actual sheet's column headers, then rerun."
                 )
                 st.stop()
 
