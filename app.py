@@ -124,7 +124,11 @@ ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS
 # ======================================================================================
 
 def clean_title(brand, gender, title, footwear_color, is_footwear):
-    """Build title per spec section 1."""
+    """
+    Build title per spec:
+    [NEW] [Brand] [Gender] [Regional Display Name] [Color (if Footwear)]
+    Gender is now ALWAYS included when present (not just when it's "Unisex").
+    """
     title = title or ""
     for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
@@ -132,14 +136,14 @@ def clean_title(brand, gender, title, footwear_color, is_footwear):
     parts = ["[NEW]"]
     if brand:
         parts.append(str(brand).strip())
-    if gender and str(gender).strip().lower() == "unisex":
-        parts.append("Unisex")
+    if gender and str(gender).strip():
+        parts.append(str(gender).strip())
     if title:
         parts.append(title.strip())
     if is_footwear and footwear_color:
         parts.append(str(footwear_color).strip())
 
-    # remove duplicate consecutive / anywhere words (case-insensitive), preserve first occurrence
+    # remove duplicate words anywhere in the title (case-insensitive), preserve first occurrence
     seen = set()
     deduped = []
     for word in " ".join(parts).split():
@@ -152,38 +156,55 @@ def clean_title(brand, gender, title, footwear_color, is_footwear):
 
 
 def clean_description(raw_desc, style_number, care=None, care_label=None):
-    """Clean description per spec section 4."""
+    """
+    Clean description per Lazada Short Description spec:
+      - Remove <h3>PRODUCT STORY</h3> variants (case/whitespace-insensitive).
+      - Remove <br/>, </br>, <br /> line breaks.
+      - Trim leading/trailing whitespace.
+      - Replace <h3>DETAILS</h3> variants with two newlines + "DETAILS".
+      - Replace <h3>FEATURES & BENEFITS</h3> / <h3>FEATURES + BENEFITS</h3>
+        variants with two newlines + "FEATURES & BENEFITS".
+      - Replace <li> with newline + "- " bullet; strip </li>, <ul>, </ul>,
+        <p>, </p> entirely.
+    """
     if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
         raw_desc = ""
     desc = str(raw_desc)
 
-    # Remove PRODUCT STORY heading
+    # Remove <h3>PRODUCT STORY</h3> (and lowercase/whitespace variants) entirely.
+    desc = re.sub(r"<h3>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
+    # Safety net: bare "product story" text without the heading tags.
     desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
 
-    # Convert headings
-    desc = re.sub(r"\bDETAILS\b", '"DETAILS"', desc, flags=re.IGNORECASE)
+    # Remove line breaks: <br/>, </br>, <br />
+    desc = re.sub(r"<br\s*/?>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"</br>", "", desc, flags=re.IGNORECASE)
+
+    # Replace <h3>DETAILS</h3> variants with two newlines + "DETAILS"
+    desc = re.sub(r"<h3>\s*details\s*</h3>", "\n\nDETAILS", desc, flags=re.IGNORECASE)
+
+    # Replace <h3>FEATURES & BENEFITS</h3> / <h3>FEATURES + BENEFITS</h3> variants
     desc = re.sub(
-        r"FEATURES\s*(&|\+)\s*BENEFITS",
-        '"FEATURES & BENEFITS"',
+        r"<h3>\s*features\s*(&|\+)\s*benefits\s*</h3>",
+        "\n\nFEATURES & BENEFITS",
         desc,
         flags=re.IGNORECASE,
     )
 
-    # Convert <li> to bullet (ensure newline separation between list items)
-    desc = re.sub(r"<li[^>]*>", "\n- ", desc, flags=re.IGNORECASE)
-    desc = re.sub(r"</li>", "\n", desc, flags=re.IGNORECASE)
+    # Convert <li> to newline + bullet
+    desc = re.sub(r"<li[^>]*>", "\r\n- ", desc, flags=re.IGNORECASE)
 
-    # Remove specified tags
-    for tag in [r"<br\s*/?>", r"<ul[^>]*>", r"</ul>", r"<p[^>]*>", r"</p>"]:
-        desc = re.sub(tag, "\n", desc, flags=re.IGNORECASE)
+    # Strip </li>, <ul>, </ul>, <p>, </p> entirely (no replacement)
+    for tag in [r"</li>", r"<ul[^>]*>", r"</ul>", r"<p[^>]*>", r"</p>"]:
+        desc = re.sub(tag, "", desc, flags=re.IGNORECASE)
 
     # Strip any remaining stray HTML tags (safety net)
     desc = re.sub(r"<[^>]+>", "", desc)
 
-    # Trim extra spaces / blank lines
+    # Trim leading/trailing whitespace (per row and overall)
     lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in desc.splitlines()]
     lines = [ln for ln in lines if ln != ""]
-    desc = "\n".join(lines)
+    desc = "\n".join(lines).strip()
 
     # Append Style, CARE, CARE LABEL
     tail = [f"Style : {style_number}"]
@@ -196,22 +217,28 @@ def clean_description(raw_desc, style_number, care=None, care_label=None):
     return desc.strip()
 
 
-def is_footwear(product_type):
-    if not product_type:
+def is_footwear(product_division):
+    """Product Division check (Footwear / Apparel / Accessories)."""
+    if not product_division:
         return False
-    return str(product_type).strip().lower() in ("footwear", "shoes", "trainers", "sandals", "slides")
+    return str(product_division).strip().lower() in ("footwear", "shoes", "trainers", "sandals", "slides")
 
 
-def size_sort_key(size_val):
-    """Sort key supporting alpha size order or ascending numeric."""
+def size_sort_key(size_val, is_footwear_row=False):
+    """
+    Variant 2 size sorting:
+      - Alphanumeric/sizing (XS, S, M, L, XL, XXL, OSFA, age ranges like 1-2Y):
+        sort by the predefined ALPHA_SIZE_ORDER sequence.
+      - Purely numeric (footwear UK shoe sizes): sort numerically ascending.
+    """
     s = str(size_val).strip().upper()
     if s in ALPHA_SIZE_ORDER:
-        return (0, ALPHA_SIZE_ORDER.index(s), 0)
+        return (0, ALPHA_SIZE_ORDER.index(s), 0, "")
     try:
         num = float(re.sub(r"[^\d.]", "", s))
-        return (1, 0, num)
+        return (1, 0, num, "")
     except (ValueError, TypeError):
-        return (2, 0, s)
+        return (2, 0, 0, s)
 
 
 def match_category_id(title, category_df, keyword_col, id_col):
@@ -228,6 +255,38 @@ def match_category_id(title, category_df, keyword_col, id_col):
             best_match = row.get(id_col, "")
             best_len = len(kw)
     return best_match
+
+
+def format_size_value(uk_size, is_footwear_row):
+    """
+    Use UK size for ALL divisions (Footwear, Apparel, Accessories).
+    Prefix convention: 'UK:' for footwear numeric sizes, 'Int:' for
+    Apparel/Accessories alpha sizes (XS, S, M, L, XL, XXL, OSFA, etc.).
+    """
+    if uk_size is None or (isinstance(uk_size, float) and pd.isna(uk_size)) or str(uk_size).strip() == "":
+        return ""
+    s = str(uk_size).strip()
+    if is_footwear_row:
+        return f"UK:{s}"
+    return f"Int:{s}"
+
+
+def count_groups_by_division(master_df, mc):
+    """
+    For each distinct Style Number (non-footwear rows, per Product Division),
+    and for each distinct Color Number (footwear rows, per Product Division),
+    count how many rows belong to that group. Used to decide whether a group
+    needs a Parent row (count > 1) or is a single standalone row (count == 1).
+    """
+    counts = {}
+    for _, r in master_df.iterrows():
+        ptype = r.get(mc["product_type"], "")
+        if is_footwear(ptype):
+            key = ("footwear", r.get(mc["color_no"], ""))
+        else:
+            key = ("other", r.get(mc["style_no"], ""))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def build_size_chart_key(age_group, gender, article_group, article_type):
@@ -335,16 +394,18 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     currency_code = REGION_CURRENCY.get(region, "PHP")
 
     rows = []
+    master_df = master_df.copy()
 
+    # --- Grouping key: distinct Style Number (non-footwear) OR distinct
+    # Color Number (footwear), both determined via Product Division checks. ---
     def group_key(r):
         ptype = r.get(mc["product_type"], "")
-        style = r.get(mc["style_no"], "")
         if is_footwear(ptype):
             color_no = r.get(mc["color_no"], "")
-            return f"{style}__{color_no}"
-        return f"{style}"
+            return f"footwear__{color_no}"
+        style = r.get(mc["style_no"], "")
+        return f"other__{style}"
 
-    master_df = master_df.copy()
     master_df["_group_key"] = master_df.apply(group_key, axis=1)
 
     for group_key_val, group_df in master_df.groupby("_group_key", sort=False):
@@ -352,9 +413,10 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         ptype = first.get(mc["product_type"], "")
         footwear = is_footwear(ptype)
 
+        gender_val = first.get(mc["gender"], "")
         title = clean_title(
             first.get(mc["brand"], ""),
-            first.get(mc["gender"], ""),
+            gender_val,
             first.get(mc["title"], ""),
             first.get(mc["footwear_color"], "") if footwear else "",
             footwear,
@@ -371,10 +433,10 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
 
-        # --- Size Chart Template lookup (replaces old free-text Size Chart Sheet) ---
+        # --- Size Chart Template lookup (direct key match, no keyword matching) ---
         size_chart_key = build_size_chart_key(
             first.get(mc["age_group"], ""),
-            first.get(mc["gender"], ""),
+            gender_val,
             first.get(mc["article_group"], ""),
             first.get(mc["article_type"], ""),
         )
@@ -385,11 +447,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         template_attr_2 = extract_description_main(raw_desc)
         template_attr_3 = extract_productstory(raw_desc)
 
+        # Group has multiple rows (variants) -> insert a Parent row first.
         total_variation_count = len(group_df)
         has_variants = total_variation_count > 1
 
         base_row = {
             "Product Description 1": USER_TEMPLATE_NAME,
+            "Product Name": title,
             "Title": title,
             "Description": desc,
             "Total variation": total_variation_count,
@@ -413,55 +477,69 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         }
 
         if not has_variants:
+            # Single row, no variants: no Parent row needed — write directly.
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
-            color_family = single.get(mc["color_family"], "")
-            uk_size = single.get(mc["uk_size"], "")
+            color_name = single.get(mc["color_name"], "")
+            uk_size_raw = single.get(mc["uk_size"], "")
+            formatted_size = format_size_value(uk_size_raw, footwear)
             row = {
                 "Row Type": "Parent",
                 **base_row,
                 "SKU": sku,
+                "Seller SKU": sku,
                 "RRP": get_price(single, price_col),
-                "Variation 1": single.get(mc["color_name"], ""),
-                "Variation 2": uk_size,
-                "Product Specification 1": f"sku.color_family={color_family}",
-                "Product Specification 2": f"sku.size={uk_size}",
+                # Variation 1 fetches Color Name directly from the Master Input Sheet.
+                "Variation 1": color_name,
+                "Variation 2": formatted_size,
+                "Product Specification 1": f"sku.color_family={color_name}",
+                "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
                 "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
             }
             rows.append(row)
             continue
 
+        # --- Parent row: write group-level details (title, brand, price type). ---
+        # Variation 1 for the Parent name = color_family; Variation 2 for the
+        # Parent name = the literal "size" label (per spec), not an actual value.
+        parent_color_family = first.get(mc["color_family"], "")
         parent_row = {
             "Row Type": "Parent",
             **base_row,
+            "Variation 1": parent_color_family,
+            "Variation 2": "size",
             "Stock": 0,
         }
         rows.append(parent_row)
 
+        # --- Child rows: variation1 = color no/style option, variation2 = size option. ---
         child_records = group_df.to_dict("records")
         child_records.sort(
             key=lambda r: (
                 str(r.get(mc["color_family"], "")),
                 str(r.get(mc["color_name"], "")),
-                size_sort_key(r.get(mc["size"], "")),
+                size_sort_key(r.get(mc["uk_size"], r.get(mc["size"], "")), footwear),
             )
         )
 
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
-            color_family = rec.get(mc["color_family"], "")
-            uk_size = rec.get(mc["uk_size"], "")
+            color_name = rec.get(mc["color_name"], "")
+            uk_size_raw = rec.get(mc["uk_size"], "")
+            formatted_size = format_size_value(uk_size_raw, footwear)
             child_row = {
                 "Row Type": "Child",
                 **base_row,
                 "Description": "",  # child rows: SKU-specific only
                 "SKU": sku,
+                "Seller SKU": sku,
                 "RRP": get_price(rec, price_col),
-                "Variation 1": rec.get(mc["color_name"], ""),
-                "Variation 2": uk_size,
-                "Product Specification 1": f"sku.color_family={color_family}",
-                "Product Specification 2": f"sku.size={uk_size}",
+                # Variation 1 fetches Color Name directly from the Master Input Sheet.
+                "Variation 1": color_name,
+                "Variation 2": formatted_size,
+                "Product Specification 1": f"sku.color_family={color_name}",
+                "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
                 "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
             }
