@@ -1,21 +1,38 @@
 # Marketplace Bulk Upload Sheet Generator
 
-Streamlit app that converts a Master Input Sheet + supporting sheets (Tracker,
-Image, Size Chart, Category) into a marketplace-ready bulk upload file, per
+Streamlit app that converts a Master Input Sheet + supporting sheets (Image,
+Size Chart Template, Category) into a marketplace-ready bulk upload file, per
 the spec: title cleaning, parent/child grouping, variations, description
-cleaning, pricing, stock=0, default values, images, size charts, and category
-IDs.
+cleaning, pricing, stock=0, default values, images, size chart template
+values, and category IDs.
 
 ## ⚠️ Before you run this
 
 The column-name constants at the top of `app.py` (`MASTER_COLS`,
-`TRACKER_COLS`, `IMAGE_SHEET_COLS`, `SIZE_CHART_COLS`, `CATEGORY_SHEET_COLS`)
-are **best-guess placeholders** because this app was built without seeing
-your real spreadsheets. Open `app.py`, find the `CONFIG` section near the
-top, and edit each dictionary value to match your actual column headers
-exactly (e.g. if your Master Sheet calls it `"Style No."` instead of
-`"Style Number"`, update it there). If you upload a Sample Upload Format
-file in the app, the final output columns/order will automatically match it.
+`IMAGE_SHEET_COLS`, `SIZE_CHART_TEMPLATE_COLS`, `CATEGORY_SHEET_COLS`) are
+**best-guess placeholders** because this app was built without seeing your
+real spreadsheets. Open `app.py`, find the `CONFIG` section near the top,
+and edit each dictionary value to match your actual column headers exactly
+(e.g. if your Master Sheet calls it `"Style No."` instead of
+`"Style Number"`, update it there). The output columns/order will always
+match whatever you upload as the Sample Upload Format file — that file is
+now **required**.
+
+## What changed in this version
+
+- **Tracker Sheet removed.** Price is read directly from a column on the
+  Master Input Sheet (you pick which column in the app UI) — no separate
+  pricing file upload anymore.
+- **Size Chart Sheet replaced with a Size Chart Template Sheet.** Instead of
+  fuzzy keyword-in-title matching against a URL, this does a direct key
+  lookup: `Age Group-Gender-Article Group-Article Type` → a literal
+  `Template Attribute 1` string you define in that sheet (e.g.
+  `sizechart=Men Tops`). Add/edit rows in that sheet for every combination
+  you need; no code changes required to add new size-chart mappings.
+- **Sample Upload Format is now mandatory.** The generated file's columns
+  and order always match the Sample Upload Format's headers exactly — any
+  column missing from the app's internal output is filled blank, and any
+  computed column not present in the sample is dropped.
 
 ## Project structure
 
@@ -65,19 +82,21 @@ git push -u origin main
 | 2. Parent & Child Grouping | `build_upload_sheet()` groups by Style Number (or Style+Color for footwear) |
 | 3. Variations | Color Family→Color Name, Size→UK Size, sorted via `size_sort_key()` |
 | 4. Description Cleaning | `clean_description()` — strips tags, converts headings/bullets, appends Style/Care/Care Label |
-| 5. Price | `get_price()` pulls from the Tracker sheet by SKU |
+| 5. Price | `get_price()` pulls straight from the Master Sheet's selected price column |
 | 6. Stock | Hardcoded to `0` for every Parent/Child row |
 | 7. Default Values | `DEFAULTS` dict applied to every row |
 | 8. Images | `get_images_for_sku()` pulls from the Image Sheet by SKU |
-| 9. Size Chart | `match_size_chart()` matches title/category to the Size Chart Sheet |
+| 9. Size Chart | `match_size_chart_template()` — direct key lookup against the Size Chart Template Sheet |
 | 10. Category | `match_category_id()` matches title keywords to the Category Sheet |
+| Output columns | Always taken from the required Sample Upload Format file |
 
 ## Known adjustments still needed once real files are shared
 
 - Exact column header names in each source sheet (see CONFIG section).
-- Exact output column names/order (auto-solved if you upload a Sample
-  Upload Format file — otherwise edit `output_columns` logic).
-- Category/size-chart matching currently uses simple keyword-in-title
-  substring matching; if your Category/Size Chart sheets use structured
-  attributes (e.g. Product Type + Gender columns) instead of free-text
-  keywords, this should be switched to an exact-match join instead.
+- Category/size-chart-template keys — currently the Category Sheet still
+  uses simple keyword-in-title substring matching; if your Category Sheet
+  uses structured attributes instead of free-text keywords, switch that to
+  an exact-match join the same way the Size Chart Template lookup now works.
+- Size Chart Template Sheet must contain one row per
+  `Age Group-Gender-Article Group-Article Type` combination you expect to
+  see, with the exact `Template Attribute 1` string to output for it.
