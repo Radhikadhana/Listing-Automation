@@ -469,14 +469,21 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
     out_df = pd.DataFrame(rows)
 
+    # Capture parent/child counts BEFORE trimming to the Sample Upload Format's
+    # columns — "Row Type" is an internal tracking column and may not exist in
+    # the sample header, so it can be dropped in the next step.
+    parent_count = int((out_df["Row Type"] == "Parent").sum()) if "Row Type" in out_df.columns else 0
+    child_count = int((out_df["Row Type"] == "Child").sum()) if "Row Type" in out_df.columns else 0
+
     # Output STRICTLY follows the Sample Upload Format headers — no extra columns,
-    # no reordering, missing ones filled blank.
+    # no reordering, missing ones filled blank. If "Row Type" isn't one of the
+    # sample's headers, it is correctly dropped here.
     for col in output_columns:
         if col not in out_df.columns:
             out_df[col] = ""
     out_df = out_df[output_columns]
 
-    return out_df
+    return out_df, parent_count, child_count
 
 
 # ======================================================================================
@@ -655,7 +662,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             output_columns = list(sample_df.columns)
 
             try:
-                result_df = build_upload_sheet(
+                result_df, parent_count, child_count = build_upload_sheet(
                     master_df, image_df, size_chart_template_df, category_df, output_columns,
                     price_col=price_col,
                     image_sku_col=image_sku_col,
@@ -675,8 +682,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 )
                 st.stop()
 
-        st.success(f"Generated {len(result_df)} rows ({(result_df['Row Type']=='Parent').sum()} parent, "
-                   f"{(result_df['Row Type']=='Child').sum()} child).")
+        st.success(f"Generated {len(result_df)} rows ({parent_count} parent, {child_count} child).")
         st.dataframe(result_df, use_container_width=True)
 
         buffer = io.BytesIO()
