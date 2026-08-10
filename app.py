@@ -217,6 +217,8 @@ def size_sort_key(size_val):
 def match_category_id(title, category_df, keyword_col, id_col):
     if category_df is None or category_df.empty:
         return ""
+    if keyword_col not in category_df.columns or id_col not in category_df.columns:
+        return ""
     title_lower = str(title).lower()
     best_match = ""
     best_len = 0
@@ -238,9 +240,13 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     """
     Direct key lookup (NOT keyword/title matching) against the Size Chart
     Template Sheet. Returns the literal Template Attribute 1 string, or ""
-    if the key isn't found.
+    if the key isn't found or either expected column is missing from the
+    uploaded sheet (missing columns are treated as "no data available" —
+    not a crash — since the sheet is optional).
     """
     if size_chart_template_df is None or size_chart_template_df.empty:
+        return ""
+    if key_col not in size_chart_template_df.columns or attr_col not in size_chart_template_df.columns:
         return ""
     match = size_chart_template_df[
         size_chart_template_df[key_col].astype(str).str.strip() == str(size_chart_key).strip()
@@ -252,6 +258,8 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
 
 def get_images_for_sku(sku, image_df, sku_col, image_cols):
     if image_df is None or image_df.empty:
+        return []
+    if sku_col not in image_df.columns:
         return []
     row = image_df[image_df[sku_col].astype(str) == str(sku)]
     if row.empty:
@@ -303,11 +311,26 @@ def extract_productstory(raw_desc):
 
 def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         output_columns, price_col,
+                        image_sku_col=None, image_cols=None,
+                        size_chart_key_col=None, size_chart_attr_col=None,
+                        category_keyword_col=None, category_id_col=None,
                         region="PH", marketplace="Lazada"):
     mc = MASTER_COLS
-    ic = IMAGE_SHEET_COLS
-    sct = SIZE_CHART_TEMPLATE_COLS
-    cc = CATEGORY_SHEET_COLS
+    # Column names for the supporting sheets are picked at runtime in the UI
+    # (since sheets rarely match the CONFIG placeholders exactly); fall back
+    # to CONFIG defaults only if the caller didn't supply a runtime choice.
+    ic = {
+        "sku": image_sku_col if image_sku_col else IMAGE_SHEET_COLS["sku"],
+        "image_cols": image_cols if image_cols else IMAGE_SHEET_COLS["image_cols"],
+    }
+    sct = {
+        "key": size_chart_key_col if size_chart_key_col else SIZE_CHART_TEMPLATE_COLS["key"],
+        "template_attribute_1": size_chart_attr_col if size_chart_attr_col else SIZE_CHART_TEMPLATE_COLS["template_attribute_1"],
+    }
+    cc = {
+        "keyword": category_keyword_col if category_keyword_col else CATEGORY_SHEET_COLS["keyword"],
+        "category_id": category_id_col if category_id_col else CATEGORY_SHEET_COLS["category_id"],
+    }
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
 
@@ -529,6 +552,92 @@ if master_file is not None:
         help="Choose which column in the Master Input Sheet holds the price to pull into the upload sheet.",
     )
 
+# --- Size Chart Template Sheet column pickers ---
+# Instead of requiring your sheet's headers to literally match the CONFIG
+# constants (which is what caused the "Size Chart Key" crash), let you pick
+# the real column names from a dropdown once the file is uploaded.
+size_chart_key_col = SIZE_CHART_TEMPLATE_COLS["key"]
+size_chart_attr_col = SIZE_CHART_TEMPLATE_COLS["template_attribute_1"]
+
+if size_chart_template_file is not None:
+    _sct_preview_df = load_any(size_chart_template_file)
+    size_chart_template_file.seek(0)
+    sct_cols_available = list(_sct_preview_df.columns)
+
+    st.markdown("#### 📌 Size Chart Template Sheet — Column Selection")
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        default_key_idx = (
+            sct_cols_available.index(size_chart_key_col) if size_chart_key_col in sct_cols_available else 0
+        )
+        size_chart_key_col = st.selectbox(
+            "Lookup key column (Age Group-Gender-Article Group-Article Type)",
+            options=sct_cols_available,
+            index=default_key_idx,
+            key="size_chart_key_col_select",
+        )
+    with sc2:
+        default_attr_idx = (
+            sct_cols_available.index(size_chart_attr_col) if size_chart_attr_col in sct_cols_available else 0
+        )
+        size_chart_attr_col = st.selectbox(
+            "Template Attribute 1 value column",
+            options=sct_cols_available,
+            index=default_attr_idx,
+            key="size_chart_attr_col_select",
+        )
+
+# --- Category Sheet column pickers ---
+category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
+category_id_col = CATEGORY_SHEET_COLS["category_id"]
+
+if category_file is not None:
+    _cat_preview_df = load_any(category_file)
+    category_file.seek(0)
+    cat_cols_available = list(_cat_preview_df.columns)
+
+    st.markdown("#### 📌 Category Sheet — Column Selection")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        default_kw_idx = (
+            cat_cols_available.index(category_keyword_col) if category_keyword_col in cat_cols_available else 0
+        )
+        category_keyword_col = st.selectbox(
+            "Title keyword column",
+            options=cat_cols_available,
+            index=default_kw_idx,
+            key="category_keyword_col_select",
+        )
+    with cc2:
+        default_id_idx = (
+            cat_cols_available.index(category_id_col) if category_id_col in cat_cols_available else 0
+        )
+        category_id_col = st.selectbox(
+            "Category ID column",
+            options=cat_cols_available,
+            index=default_id_idx,
+            key="category_id_col_select",
+        )
+
+# --- Image Sheet column picker ---
+image_sku_col = IMAGE_SHEET_COLS["sku"]
+
+if image_file is not None:
+    _img_preview_df = load_any(image_file)
+    image_file.seek(0)
+    img_cols_available = list(_img_preview_df.columns)
+
+    st.markdown("#### 📌 Image Sheet — SKU Column Selection")
+    default_img_sku_idx = (
+        img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
+    )
+    image_sku_col = st.selectbox(
+        "SKU column in Image Sheet",
+        options=img_cols_available,
+        index=default_img_sku_idx,
+        key="image_sku_col_select",
+    )
+
 
 if st.button("🚀 Generate Upload Sheet", type="primary"):
     if master_file is None:
@@ -549,6 +658,11 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 result_df = build_upload_sheet(
                     master_df, image_df, size_chart_template_df, category_df, output_columns,
                     price_col=price_col,
+                    image_sku_col=image_sku_col,
+                    size_chart_key_col=size_chart_key_col,
+                    size_chart_attr_col=size_chart_attr_col,
+                    category_keyword_col=category_keyword_col,
+                    category_id_col=category_id_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
