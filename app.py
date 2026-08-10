@@ -63,6 +63,32 @@ MASTER_COLS = {
     "article_type": "Article Type",
 }
 
+# Human-readable label + whether the field is required for a usable output,
+# used to build the runtime Master Sheet column-mapping UI below. This is
+# what actually fixes "field X is blank in the output" bugs — instead of
+# silently defaulting to "" when a hard-coded header name doesn't match your
+# real sheet, the app now makes you explicitly map every field once per file.
+MASTER_COLS_FIELDS = [
+    ("style_no", "Style Number", True),
+    ("color_no", "Color Number (Footwear)", True),
+    ("brand", "Brand", True),
+    ("gender", "Gender", True),
+    ("title", "Regional Display Name (used in Title)", True),
+    ("color_family", "Color Family", True),
+    ("color_name", "Color Name (used in Variation 1)", True),
+    ("size", "Size", False),
+    ("uk_size", "UK Size (used in Variation 2)", True),
+    ("sku", "SKU", True),
+    ("description", "Description", True),
+    ("care", "Care", False),
+    ("care_label", "Care Label", False),
+    ("footwear_color", "Footwear Color (used in Title for Footwear)", False),
+    ("product_type", "Product Division (Footwear/Apparel/Accessories)", True),
+    ("age_group", "Age Group", False),
+    ("article_group", "Article Group", False),
+    ("article_type", "Article Type", False),
+]
+
 IMAGE_SHEET_COLS = {
     "sku": "SKU",
     "image_cols": ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6", "Image 7", "Image 8", "Image 9"],
@@ -370,11 +396,20 @@ def extract_productstory(raw_desc):
 
 def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         output_columns, price_col,
+                        master_col_map=None,
                         image_sku_col=None, image_cols=None,
                         size_chart_key_col=None, size_chart_attr_col=None,
                         category_keyword_col=None, category_id_col=None,
                         region="PH", marketplace="Lazada"):
-    mc = MASTER_COLS
+    # Master Sheet field->column mapping is picked at runtime in the UI (this
+    # is what fixes "Title/SKU/Variation blank in output" bugs — those fields
+    # were silently defaulting to "" whenever CONFIG's hard-coded header names
+    # didn't match your real sheet). Any field not explicitly mapped falls
+    # back to the CONFIG default as a last resort.
+    mc = dict(MASTER_COLS)
+    if master_col_map:
+        mc.update({k: v for k, v in master_col_map.items() if v})
+
     # Column names for the supporting sheets are picked at runtime in the UI
     # (since sheets rarely match the CONFIG placeholders exactly); fall back
     # to CONFIG defaults only if the caller didn't supply a runtime choice.
@@ -476,8 +511,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Marketplace": marketplace,
         }
 
+        # Parent SKU: the group's own identifying SKU (Style Number for
+        # non-footwear, Color Number for Footwear per the grouping rule above).
+        # Used so every child row can reference which parent it belongs to.
+        parent_sku_value = first.get(mc["color_no"], "") if footwear else first.get(mc["style_no"], "")
+
         if not has_variants:
-            # Single row, no variants: no Parent row needed — write directly.
+            # Single row, no variants: no separate Parent row needed — write directly.
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
             color_name = single.get(mc["color_name"], "")
@@ -488,6 +528,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 **base_row,
                 "SKU": sku,
                 "Seller SKU": sku,
+                "Parent SKU": parent_sku_value,
                 "RRP": get_price(single, price_col),
                 # Variation 1 fetches Color Name directly from the Master Input Sheet.
                 "Variation 1": color_name,
@@ -507,6 +548,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         parent_row = {
             "Row Type": "Parent",
             **base_row,
+            "SKU": parent_sku_value,
+            "Seller SKU": parent_sku_value,
+            "Parent SKU": "",  # a Parent row has no parent of its own
             "Variation 1": parent_color_family,
             "Variation 2": "size",
             "Stock": 0,
@@ -534,6 +578,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Description": "",  # child rows: SKU-specific only
                 "SKU": sku,
                 "Seller SKU": sku,
+                "Parent SKU": parent_sku_value,
                 "RRP": get_price(rec, price_col),
                 # Variation 1 fetches Color Name directly from the Master Input Sheet.
                 "Variation 1": color_name,
@@ -573,10 +618,9 @@ st.title("🛒 Marketplace Bulk Upload Sheet Generator")
 
 st.markdown(
     """
-Upload your source sheets below. Column-name mapping is configured at the top of
-`app.py` (`MASTER_COLS`, `IMAGE_SHEET_COLS`, etc.) — **edit those constants to match
-your real spreadsheet headers** before running, since this app was built without
-seeing your actual files.
+Upload your source sheets below. **Master Sheet column mapping is now done in the UI**
+(see the "Map Master Sheet columns" section once you upload it) — you no longer need to
+edit `app.py` to match your real headers for those fields.
 
 **Note:** the Tracker Sheet has been removed — price is now read directly from a
 column on the Master Input Sheet. The Size Chart Sheet has been replaced with a
@@ -617,25 +661,57 @@ def load_any(f):
     return pd.read_excel(f)
 
 
-# --- Master Sheet price column picker ---
+# --- Master Sheet full field mapping (fixes Title/SKU/Variation/price blanks) ---
+# Every field the app needs from the Master Sheet is now explicitly mapped by
+# you, at runtime, from your file's real headers — instead of silently
+# defaulting to "" when a hard-coded CONFIG name doesn't match.
 price_col = MASTER_COLS["price"]
+master_col_map = {}
 
 if master_file is not None:
     _master_preview_df = load_any(master_file)
     master_file.seek(0)  # reset pointer so it can be read again later
     master_cols_available = list(_master_preview_df.columns)
 
-    st.markdown("#### 📌 Master Sheet — Price Column Selection")
-    default_price_idx = (
-        master_cols_available.index(price_col) if price_col in master_cols_available else 0
+    st.markdown("#### 📌 Master Sheet — Column Mapping")
+    st.caption(
+        "Map every field to the matching column in your uploaded Master Sheet. "
+        "This is what fills in Title, SKU, Parent SKU, and Variation 1/2 correctly — "
+        "if a field is left unmapped, that part of the output stays blank."
     )
-    price_col = st.selectbox(
-        "Price column in Master Input Sheet",
-        options=master_cols_available,
-        index=default_price_idx,
-        key="master_price_col_select",
-        help="Choose which column in the Master Input Sheet holds the price to pull into the upload sheet.",
-    )
+
+    with st.expander("Map Master Sheet columns", expanded=True):
+        none_option = "— not in my sheet —"
+        options_with_none = [none_option] + master_cols_available
+
+        mcol1, mcol2 = st.columns(2)
+        for i, (field_key, field_label, required) in enumerate(MASTER_COLS_FIELDS):
+            default_header = MASTER_COLS[field_key]
+            default_idx = (
+                options_with_none.index(default_header) if default_header in options_with_none else 0
+            )
+            target_col = mcol1 if i % 2 == 0 else mcol2
+            with target_col:
+                label = f"{field_label}" + (" *" if required else "")
+                chosen = st.selectbox(
+                    label,
+                    options=options_with_none,
+                    index=default_idx,
+                    key=f"master_col_map_{field_key}",
+                )
+                master_col_map[field_key] = "" if chosen == none_option else chosen
+
+        st.markdown("#### 📌 Price Column")
+        default_price_idx = (
+            master_cols_available.index(price_col) if price_col in master_cols_available else 0
+        )
+        price_col = st.selectbox(
+            "Price column in Master Input Sheet",
+            options=master_cols_available,
+            index=default_price_idx,
+            key="master_price_col_select",
+            help="Choose which column in the Master Input Sheet holds the price to pull into the upload sheet.",
+        )
 
 # --- Size Chart Template Sheet column pickers ---
 # Instead of requiring your sheet's headers to literally match the CONFIG
@@ -743,6 +819,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 result_df, parent_count, child_count = build_upload_sheet(
                     master_df, image_df, size_chart_template_df, category_df, output_columns,
                     price_col=price_col,
+                    master_col_map=master_col_map,
                     image_sku_col=image_sku_col,
                     size_chart_key_col=size_chart_key_col,
                     size_chart_attr_col=size_chart_attr_col,
