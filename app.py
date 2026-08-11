@@ -491,7 +491,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Product Name": title,
             "Title": title,
             "Description": desc,
-            "Total variation": total_variation_count,
             "Currency Code": currency_code,
             "Quantity": 0,
             "Category ID": category_id,
@@ -529,6 +528,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "SKU": sku,
                 "Seller SKU": sku,
                 "Parent SKU": parent_sku_value,
+                "Total variation": total_variation_count,
                 "RRP": get_price(single, price_col),
                 # Variation 1 fetches Color Name directly from the Master Input Sheet.
                 "Variation 1": color_name,
@@ -542,16 +542,17 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             continue
 
         # --- Parent row: write group-level details (title, brand, price type). ---
-        # Variation 1 for the Parent name = color_family; Variation 2 for the
-        # Parent name = the literal "size" label (per spec), not an actual value.
-        parent_color_family = first.get(mc["color_family"], "")
+        # Variation 1 HEADER for the Parent row = "color_family"; Variation 2
+        # HEADER for the Parent row = "size" (these are literal header labels,
+        # not actual values). Total variation count appears ONLY on the Parent row.
         parent_row = {
             "Row Type": "Parent",
             **base_row,
             "SKU": parent_sku_value,
             "Seller SKU": parent_sku_value,
             "Parent SKU": "",  # a Parent row has no parent of its own
-            "Variation 1": parent_color_family,
+            "Total variation": total_variation_count,
+            "Variation 1": "color_family",
             "Variation 2": "size",
             "Stock": 0,
         }
@@ -579,6 +580,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "SKU": sku,
                 "Seller SKU": sku,
                 "Parent SKU": parent_sku_value,
+                "Total variation": "",  # Total variation appears ONLY on the Parent row
                 "RRP": get_price(rec, price_col),
                 # Variation 1 fetches Color Name directly from the Master Input Sheet.
                 "Variation 1": color_name,
