@@ -94,6 +94,16 @@ IMAGE_SHEET_COLS = {
     "image_cols": ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6", "Image 7", "Image 8", "Image 9"],
 }
 
+# Size Chart Sheet (NEW): a separate upload that provides the actual size
+# chart IMAGE URL, matched by a title/keyword reference — this feeds the
+# "Size Chart Image URL" output column. This is distinct from the Size Chart
+# TEMPLATE Sheet below, which feeds "Template Attribute 1" via a direct
+# composite-key lookup (Age Group-Gender-Article Group-Article Type).
+SIZE_CHART_IMAGE_COLS = {
+    "title_keyword": "Title",       # keyword/phrase matched against the generated product Title
+    "image_url": "Size Chart Image URL",  # the literal image URL to output
+}
+
 # Size Chart TEMPLATE sheet (replaces old free-text Size Chart Sheet).
 # Expected columns: a lookup key (Age Group-Gender-Article Group-Article Type,
 # same composite key used elsewhere) and the literal Template Attribute 1 value
@@ -283,6 +293,29 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
+def match_size_chart_image(title, size_chart_image_df, title_col, url_col):
+    """
+    Matches the Size Chart Sheet's title/keyword column against the generated
+    product Title (longest matching keyword wins, same approach as category
+    matching) and returns the corresponding Size Chart Image URL. Returns ""
+    if no sheet is uploaded, the expected columns aren't found, or nothing
+    matches.
+    """
+    if size_chart_image_df is None or size_chart_image_df.empty:
+        return ""
+    if title_col not in size_chart_image_df.columns or url_col not in size_chart_image_df.columns:
+        return ""
+    title_lower = str(title).lower()
+    best_match = ""
+    best_len = 0
+    for _, row in size_chart_image_df.iterrows():
+        kw = str(row.get(title_col, "")).strip().lower()
+        if kw and kw in title_lower and len(kw) > best_len:
+            best_match = row.get(url_col, "")
+            best_len = len(kw)
+    return best_match
+
+
 def format_size_value(uk_size, is_footwear_row):
     """
     Use UK size for ALL divisions (Footwear, Apparel, Accessories).
@@ -400,6 +433,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         image_sku_col=None, image_cols=None,
                         size_chart_key_col=None, size_chart_attr_col=None,
                         category_keyword_col=None, category_id_col=None,
+                        size_chart_image_df=None,
+                        size_chart_image_title_col=None, size_chart_image_url_col=None,
                         region="PH", marketplace="Lazada"):
     # Master Sheet field->column mapping is picked at runtime in the UI (this
     # is what fixes "Title/SKU/Variation blank in output" bugs — those fields
@@ -424,6 +459,10 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     cc = {
         "keyword": category_keyword_col if category_keyword_col else CATEGORY_SHEET_COLS["keyword"],
         "category_id": category_id_col if category_id_col else CATEGORY_SHEET_COLS["category_id"],
+    }
+    sci = {
+        "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
+        "image_url": size_chart_image_url_col if size_chart_image_url_col else SIZE_CHART_IMAGE_COLS["image_url"],
     }
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
@@ -468,7 +507,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
 
-        # --- Size Chart Template lookup (direct key match, no keyword matching) ---
+        # --- Size Chart Template lookup (direct key match) -> "Template Attribute 1" ---
         size_chart_key = build_size_chart_key(
             first.get(mc["age_group"], ""),
             gender_val,
@@ -477,6 +516,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         )
         template_attr_1 = match_size_chart_template(
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+        )
+
+        # --- Size Chart Sheet lookup (matched by title reference) -> "Size Chart Image URL" ---
+        size_chart_image_url = match_size_chart_image(
+            title, size_chart_image_df, sci["title_keyword"], sci["image_url"]
         )
 
         template_attr_2 = extract_description_main(raw_desc)
@@ -494,6 +538,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Currency Code": currency_code,
             "Quantity": 0,
             "Category ID": category_id,
+            "Size Chart Image URL": size_chart_image_url,
             "Tax Class": "Default",
             "Brand": "PUMA",
             "Model": style_number,
@@ -625,10 +670,12 @@ Upload your source sheets below. **Master Sheet column mapping is now done in th
 edit `app.py` to match your real headers for those fields.
 
 **Note:** the Tracker Sheet has been removed — price is now read directly from a
-column on the Master Input Sheet. The Size Chart Sheet has been replaced with a
-Size Chart Template Sheet (direct key → Template Attribute 1 lookup, no keyword
-matching). The **Sample Upload Format is now required** — output columns/order will
-always match it exactly.
+column on the Master Input Sheet. There are now TWO separate size-chart-related
+uploads: the **Size Chart Sheet** (matched by title reference) fills the
+**"Size Chart Image URL"** output column, and the **Size Chart Template Sheet**
+(direct key lookup) fills the **"Template Attribute 1"** output column. The
+**Sample Upload Format is now required** — output columns/order will always
+match it exactly.
 """
 )
 
@@ -645,9 +692,14 @@ with col1:
     master_file = st.file_uploader("Master Input Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="master")
     image_file = st.file_uploader("Image Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="images")
     category_file = st.file_uploader("Category Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="category")
+    size_chart_image_file = st.file_uploader(
+        "Size Chart Sheet (.xlsx/.csv) — provides the Size Chart Image URL, matched by title",
+        type=["xlsx", "csv"], key="sizechartimage",
+    )
 with col2:
     size_chart_template_file = st.file_uploader(
-        "Size Chart Template Sheet (.xlsx/.csv)", type=["xlsx", "csv"], key="sizecharttemplate"
+        "Size Chart Template Sheet (.xlsx/.csv) — provides Template Attribute 1, direct key lookup",
+        type=["xlsx", "csv"], key="sizecharttemplate"
     )
     sample_file = st.file_uploader(
         "Sample Upload Format (.xlsx/.csv) — REQUIRED, defines exact output columns",
@@ -750,6 +802,43 @@ if size_chart_template_file is not None:
             key="size_chart_attr_col_select",
         )
 
+# --- Size Chart Sheet column pickers (NEW: title-referenced Size Chart Image URL) ---
+size_chart_image_title_col = SIZE_CHART_IMAGE_COLS["title_keyword"]
+size_chart_image_url_col = SIZE_CHART_IMAGE_COLS["image_url"]
+
+if size_chart_image_file is not None:
+    _sci_preview_df = load_any(size_chart_image_file)
+    size_chart_image_file.seek(0)
+    sci_cols_available = list(_sci_preview_df.columns)
+
+    st.markdown("#### 📌 Size Chart Sheet — Column Selection")
+    st.caption(
+        "The Title column here is matched (as a keyword) against each product's generated "
+        "Title — the longest matching row wins. Its Image URL then fills the 'Size Chart "
+        "Image URL' output column."
+    )
+    sci1, sci2 = st.columns(2)
+    with sci1:
+        default_sci_title_idx = (
+            sci_cols_available.index(size_chart_image_title_col) if size_chart_image_title_col in sci_cols_available else 0
+        )
+        size_chart_image_title_col = st.selectbox(
+            "Title / keyword column (matched against product Title)",
+            options=sci_cols_available,
+            index=default_sci_title_idx,
+            key="size_chart_image_title_col_select",
+        )
+    with sci2:
+        default_sci_url_idx = (
+            sci_cols_available.index(size_chart_image_url_col) if size_chart_image_url_col in sci_cols_available else 0
+        )
+        size_chart_image_url_col = st.selectbox(
+            "Size Chart Image URL column",
+            options=sci_cols_available,
+            index=default_sci_url_idx,
+            key="size_chart_image_url_col_select",
+        )
+
 # --- Category Sheet column pickers ---
 category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
 category_id_col = CATEGORY_SHEET_COLS["category_id"]
@@ -812,6 +901,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             master_df = load_any(master_file)
             image_df = load_any(image_file)
             size_chart_template_df = load_any(size_chart_template_file)
+            size_chart_image_df = load_any(size_chart_image_file)
             category_df = load_any(category_file)
             sample_df = load_any(sample_file)
 
@@ -827,6 +917,9 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_attr_col=size_chart_attr_col,
                     category_keyword_col=category_keyword_col,
                     category_id_col=category_id_col,
+                    size_chart_image_df=size_chart_image_df,
+                    size_chart_image_title_col=size_chart_image_title_col,
+                    size_chart_image_url_col=size_chart_image_url_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
@@ -834,8 +927,8 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 st.error(
                     f"Column mapping mismatch: {e}. "
                     "Please edit the CONFIG constants (MASTER_COLS, IMAGE_SHEET_COLS, "
-                    "SIZE_CHART_TEMPLATE_COLS, CATEGORY_SHEET_COLS) at the top of app.py "
-                    "to match your actual sheet's column headers, then rerun."
+                    "SIZE_CHART_TEMPLATE_COLS, SIZE_CHART_IMAGE_COLS, CATEGORY_SHEET_COLS) "
+                    "at the top of app.py to match your actual sheet's column headers, then rerun."
                 )
                 st.stop()
 
