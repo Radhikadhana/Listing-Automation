@@ -102,6 +102,7 @@ IMAGE_SHEET_COLS = {
 SIZE_CHART_IMAGE_COLS = {
     "title_keyword": "Title",       # keyword/phrase matched against the generated product Title
     "image_url": "Size Chart Image URL",  # the literal image URL to output
+    "style_no": "Style Number",     # OPTIONAL: exact-match column, tried before title-keyword matching
 }
 
 # Size Chart TEMPLATE sheet (replaces old free-text Size Chart Sheet).
@@ -159,15 +160,64 @@ ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS
 # HELPERS
 # ======================================================================================
 
-def clean_title(brand, gender, title, footwear_color, is_footwear):
+def clean_color_name(raw):
+    """
+    Cleans a color field down to a plain color name, stripping any leading
+    color NUMBER and separator. Handles both:
+      - "10 - Black"       -> "Black"   (Search Color Name style)
+      - "309707_03"        -> ""        (a raw Style_Color code, not a color
+                                          name at all -- returns "" so it
+                                          never leaks into the title/variation)
+      - "Black"            -> "Black"   (already clean)
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return ""
+    s = str(raw).strip()
+    if s.lower() in ("", "nan"):
+        return ""
+
+    # "<number> - <color name>" (Search Color Name convention) -> take the
+    # part after the LAST " - " separator.
+    if " - " in s:
+        s = s.split(" - ")[-1].strip()
+
+    # A bare numeric/underscore code with no letters at all (e.g. a raw
+    # Style_Color number like "309707_03") is not a color name -- discard it
+    # entirely rather than let a number leak into the title.
+    if re.fullmatch(r"[\d_\-\s]+", s):
+        return ""
+
+    # Strip any leftover leading numeric/underscore prefix (e.g. "01_Black").
+    s = re.sub(r"^[\d_]+[\s\-_]*", "", s).strip()
+    return s
+
+
+def normalize_match_text(s):
+    """Lowercase, strip trademark/registered symbols and punctuation, and
+    collapse whitespace -- used so keyword-in-title matching survives minor
+    formatting differences (curly quotes, ™/® symbols, extra spaces, etc.)."""
+    if s is None:
+        return ""
+    s = str(s).replace("™", "").replace("®", "")
+    s = re.sub(r"[^A-Za-z0-9\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def clean_title(brand, gender, title, footwear_color_raw, is_footwear):
     """
     Build title per spec:
     [NEW] [Brand] [Gender] [Regional Display Name] [Color (if Footwear)]
     Gender is now ALWAYS included when present (not just when it's "Unisex").
+    The footwear color is cleaned via clean_color_name() first, so a raw
+    Color Number / Style_Color code never ends up in the title -- only an
+    actual color name (e.g. "Black", not "309707_03" or "10 - Black").
     """
     title = title or ""
     for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
+
+    footwear_color = clean_color_name(footwear_color_raw)
 
     parts = ["[NEW]"]
     if brand:
@@ -177,7 +227,7 @@ def clean_title(brand, gender, title, footwear_color, is_footwear):
     if title:
         parts.append(title.strip())
     if is_footwear and footwear_color:
-        parts.append(str(footwear_color).strip())
+        parts.append(footwear_color)
 
     # remove duplicate words anywhere in the title (case-insensitive), preserve first occurrence
     seen = set()
@@ -293,26 +343,53 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
-def match_size_chart_image(title, size_chart_image_df, title_col, url_col):
+def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
+                            style_number=None, style_col=None):
     """
-    Matches the Size Chart Sheet's title/keyword column against the generated
-    product Title (longest matching keyword wins, same approach as category
-    matching) and returns the corresponding Size Chart Image URL. Returns ""
-    if no sheet is uploaded, the expected columns aren't found, or nothing
-    matches.
+    Resolves the Size Chart Image URL for a product.
+
+    Two strategies, tried in order:
+      1. STYLE NUMBER exact match (reliable): if the Size Chart Sheet has a
+         style-number column mapped, match it exactly against this group's
+         Style Number first.
+      2. TITLE keyword match (fallback): the Size Chart Sheet's title/keyword
+         column is checked for the longest substring match against the
+         product Title. Both sides are normalized first (symbols like ™/®
+         stripped, punctuation removed, whitespace collapsed, case-folded)
+         so minor formatting differences (curly quotes, trademark marks,
+         double spaces) don't silently break the match.
+
+    Returns "" if no sheet is uploaded, expected columns aren't found, or
+    nothing matches either way.
     """
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
+
+    # --- Strategy 1: exact Style Number match ---
+    if style_col and style_number not in (None, "") and style_col in size_chart_image_df.columns and url_col in size_chart_image_df.columns:
+        norm_style = str(style_number).strip().lower()
+        style_match = size_chart_image_df[
+            size_chart_image_df[style_col].astype(str).str.strip().str.lower() == norm_style
+        ]
+        if not style_match.empty:
+            val = style_match.iloc[0].get(url_col, "")
+            if val and str(val).strip():
+                return val
+
+    # --- Strategy 2: normalized keyword-in-title match ---
     if title_col not in size_chart_image_df.columns or url_col not in size_chart_image_df.columns:
         return ""
-    title_lower = str(title).lower()
+    title_norm = normalize_match_text(title)
     best_match = ""
     best_len = 0
     for _, row in size_chart_image_df.iterrows():
-        kw = str(row.get(title_col, "")).strip().lower()
-        if kw and kw in title_lower and len(kw) > best_len:
-            best_match = row.get(url_col, "")
-            best_len = len(kw)
+        kw_raw = row.get(title_col, "")
+        kw_norm = normalize_match_text(kw_raw)
+        if kw_norm and kw_norm in title_norm and len(kw_norm) > best_len:
+            url_val = row.get(url_col, "")
+            if url_val and str(url_val).strip():
+                best_match = url_val
+                best_len = len(kw_norm)
     return best_match
 
 
@@ -435,6 +512,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         category_keyword_col=None, category_id_col=None,
                         size_chart_image_df=None,
                         size_chart_image_title_col=None, size_chart_image_url_col=None,
+                        size_chart_image_style_col=None,
                         region="PH", marketplace="Lazada"):
     # Master Sheet field->column mapping is picked at runtime in the UI (this
     # is what fixes "Title/SKU/Variation blank in output" bugs — those fields
@@ -463,6 +541,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     sci = {
         "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
         "image_url": size_chart_image_url_col if size_chart_image_url_col else SIZE_CHART_IMAGE_COLS["image_url"],
+        "style_no": size_chart_image_style_col,  # optional; None means "not mapped, skip style match"
     }
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
@@ -518,9 +597,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
         )
 
-        # --- Size Chart Sheet lookup (matched by title reference) -> "Size Chart Image URL" ---
+        # --- Size Chart Sheet lookup (Style Number exact match first, then
+        # normalized title-keyword match) -> "Size Chart Image URL" ---
         size_chart_image_url = match_size_chart_image(
-            title, size_chart_image_df, sci["title_keyword"], sci["image_url"]
+            title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
+            style_number=style_number, style_col=sci["style_no"],
         )
 
         template_attr_2 = extract_description_main(raw_desc)
@@ -564,7 +645,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             # Single row, no variants: no separate Parent row needed — write directly.
             single = group_df.iloc[0]
             sku = single.get(mc["sku"], "")
-            color_name = single.get(mc["color_name"], "")
+            color_name = clean_color_name(single.get(mc["color_name"], ""))
             uk_size_raw = single.get(mc["uk_size"], "")
             formatted_size = format_size_value(uk_size_raw, footwear)
             row = {
@@ -615,7 +696,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
-            color_name = rec.get(mc["color_name"], "")
+            color_name = clean_color_name(rec.get(mc["color_name"], ""))
             uk_size_raw = rec.get(mc["uk_size"], "")
             formatted_size = format_size_value(uk_size_raw, footwear)
             child_row = {
@@ -839,6 +920,27 @@ if size_chart_image_file is not None:
             key="size_chart_image_url_col_select",
         )
 
+    st.caption(
+        "Optional but recommended: if your Size Chart Sheet also has a Style Number "
+        "column, mapping it here gives an exact match tried BEFORE the title/keyword "
+        "match above — more reliable than free-text title matching."
+    )
+    sci_none_option = "— not in my sheet / skip —"
+    sci_style_options = [sci_none_option] + sci_cols_available
+    default_sci_style_idx = (
+        sci_style_options.index(SIZE_CHART_IMAGE_COLS["style_no"])
+        if SIZE_CHART_IMAGE_COLS["style_no"] in sci_style_options else 0
+    )
+    _sci_style_choice = st.selectbox(
+        "Style Number column (optional)",
+        options=sci_style_options,
+        index=default_sci_style_idx,
+        key="size_chart_image_style_col_select",
+    )
+    size_chart_image_style_col = None if _sci_style_choice == sci_none_option else _sci_style_choice
+else:
+    size_chart_image_style_col = None
+
 # --- Category Sheet column pickers ---
 category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
 category_id_col = CATEGORY_SHEET_COLS["category_id"]
@@ -920,6 +1022,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_image_df=size_chart_image_df,
                     size_chart_image_title_col=size_chart_image_title_col,
                     size_chart_image_url_col=size_chart_image_url_col,
+                    size_chart_image_style_col=size_chart_image_style_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
