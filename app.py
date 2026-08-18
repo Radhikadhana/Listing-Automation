@@ -662,6 +662,21 @@ def _clean_field_value(val):
     return s
 
 
+def first_nonblank(*values):
+    """
+    Returns the first value that is genuinely non-blank (not None, not NaN,
+    not an empty/whitespace string, not the literal text "nan"). Plain
+    `a or b` is UNSAFE for this because pandas represents an empty cell as
+    NaN (a float), and NaN is truthy in Python -- so `a or b` would keep an
+    empty NaN cell instead of falling back to `b`. This checks blankness
+    properly instead of relying on Python truthiness.
+    """
+    for v in values:
+        if _clean_field_value(v):
+            return v
+    return ""
+
+
 def build_short_description(brand, color_name, gender, activity_group, collection,
                              material, material_local, upper_material, mid_sole_material,
                              outer_sole_material, shell_material, toe_type, heel_type,
@@ -780,7 +795,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # Search Color Name is used in the Title for EVERY division now
         # (Footwear, Apparel, Accessories) -- falls back to the Color Name
         # field if Search Color Name isn't mapped/available.
-        title_color_raw = first.get(mc["search_color_name"], "") or first.get(mc["color_name"], "")
+        title_color_raw = first_nonblank(first.get(mc["search_color_name"], ""), first.get(mc["color_name"], ""))
         title = clean_title(
             first.get(mc["brand"], ""),
             gender_val,
@@ -832,7 +847,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # read once from the group's first row, same as Title/Description). ---
         short_description = build_short_description(
             brand=_clean_field_value(first.get(mc["brand"], "")) or "PUMA",
-            color_name=extract_search_color_name(first.get(mc["search_color_name"], "") or first.get(mc["color_name"], "")),
+            color_name=extract_search_color_name(first_nonblank(first.get(mc["search_color_name"], ""), first.get(mc["color_name"], ""))),
             gender=gender_val,
             activity_group=first.get(mc["activity_group"], ""),
             collection=first.get(mc["collection"], ""),
