@@ -48,6 +48,7 @@ MASTER_COLS = {
     "title": "Regional Display Name",
     "color_family": "Color Family",
     "color_name": "Color Name",
+    "search_color_name": "Search Color Name",
     "size": "Size",
     "uk_size": "UK Size",
     "sku": "SKU",
@@ -91,6 +92,7 @@ MASTER_COLS_FIELDS = [
     ("title", "Regional Display Name (used in Title)", True),
     ("color_family", "Color Family", True),
     ("color_name", "Color Name (used in Variation 1)", True),
+    ("search_color_name", "Search Color Name (used in Short Description, code stripped)", False),
     ("size", "Size", False),
     ("uk_size", "UK Size (used in Variation 2)", True),
     ("sku", "SKU", True),
@@ -567,20 +569,56 @@ def get_price(row, price_col):
     return row.get(price_col, "")
 
 
+def extract_search_color_name(raw_color):
+    """
+    Extracts the plain color NAME from a "Search Color Name" field, stripping
+    any leading code/number, per: "10 - Orange" -> "Orange". Also handles a
+    bare code with no separator by discarding it entirely (no letters = not
+    a color name). Used specifically for the Short Description's
+    "Color Name" line (per spec: search color name WITHOUT the code number).
+    """
+    return clean_color_name(raw_color)
+
+
 def extract_description_main(raw_desc):
-    """Extract the plain main description content (before DETAILS/FEATURES sections) for Template Attribute 2."""
+    """
+    Extract the plain main description content (before DETAILS/FEATURES
+    sections) for the "description=" Template Attribute output. Matches:
+      description=<p>Any closer and you'd be in the cockpit. ...</p>
+    -- i.e. the intro paragraph(s) only, wrapped in a single <p> tag, with
+    PRODUCT STORY headings and stray tags removed.
+    """
     if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
         return ""
     desc = str(raw_desc)
+
+    # Remove PRODUCT STORY heading variants entirely (tag + text).
+    desc = re.sub(r"<h[1-6]>\s*product\s*story\s*</h[1-6]>", "", desc, flags=re.IGNORECASE)
     desc = re.sub(r"<p>\s*product\s*story\s*</p>", "", desc, flags=re.IGNORECASE)
     desc = re.sub(r"product\s*story", "", desc, flags=re.IGNORECASE)
-    split_pattern = re.compile(r"(FEATURES\s*(&|\+)\s*BENEFITS|DETAILS)", re.IGNORECASE)
+
+    # Remove line breaks.
+    desc = re.sub(r"<br\s*/?>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"</br>", "", desc, flags=re.IGNORECASE)
+
+    # Cut at the START of the first FEATURES/DETAILS heading only (no dot-all
+    # greedy tail matching -- that previously let the pattern match too early
+    # and chop the last word off the intro paragraph).
+    split_pattern = re.compile(
+        r"<h[1-6]>\s*(features\s*(&|\+)\s*benefits|details)\s*",
+        re.IGNORECASE
+    )
     match = split_pattern.search(desc)
     main_part = desc[:match.start()] if match else desc
-    main_part = main_part.strip()
-    if main_part and not re.match(r"^\s*<p", main_part, flags=re.IGNORECASE):
-        main_part = f"<p>{main_part}</p>"
-    return f"description={main_part}"
+
+    # Strip surrounding <p>/</p> tags off the intro text (any that remain,
+    # including nested ones), then re-wrap the plain text in a single <p>.
+    main_text = re.sub(r"</?p[^>]*>", "", main_part, flags=re.IGNORECASE).strip()
+    main_text = re.sub(r"\s+", " ", main_text).strip()
+
+    if not main_text:
+        return ""
+    return f"description=<p>{main_text}</p>"
 
 
 def extract_productstory(raw_desc):
@@ -772,7 +810,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # read once from the group's first row, same as Title/Description). ---
         short_description = build_short_description(
             brand=_clean_field_value(first.get(mc["brand"], "")) or "PUMA",
-            color_name=clean_color_name(first.get(mc["color_name"], "")),
+            color_name=extract_search_color_name(first.get(mc["search_color_name"], "") or first.get(mc["color_name"], "")),
             gender=gender_val,
             activity_group=first.get(mc["activity_group"], ""),
             collection=first.get(mc["collection"], ""),
