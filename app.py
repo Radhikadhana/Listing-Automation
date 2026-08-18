@@ -718,6 +718,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Variation 2": "size",
             "Stock": 0,
             "Images": parent_images,
+            "Product Image URL(s)": parent_images,
+            "Image URL": parent_images,
         }
         rows.append(parent_row)
 
@@ -752,6 +754,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
                 "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"])),
+                "Product Image URL(s)": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"])),
+                "Image URL": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"])),
             }
             rows.append(child_row)
 
