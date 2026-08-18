@@ -269,7 +269,7 @@ def clean_title(brand, gender, title, footwear_color_raw, is_footwear):
     parts = ["[NEW]"]
     if brand:
         parts.append(str(brand).strip())
-    if gender and str(gender).strip().lower() == "unisex":
+    if gender and str(gender).strip():
         parts.append(str(gender).strip())
     if title:
         parts.append(title.strip())
