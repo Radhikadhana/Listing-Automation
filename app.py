@@ -90,8 +90,8 @@ MASTER_COLS_FIELDS = [
 ]
 
 IMAGE_SHEET_COLS = {
-    "sku": "ColorNumber",  # long/tall format: one row per (ColorNumber, Link) pair
-    "url_col": "Link",     # every row matching a given ColorNumber contributes one URL
+    "sku": "ColorNumber",  # long/tall format: one row per (ColorNumber, image URL) pair
+    "url_col": "Product Image URL(s)",  # every row matching a given ColorNumber contributes one URL
 }
 
 # Size Chart Sheet (NEW): a separate upload that provides the actual size
@@ -213,6 +213,30 @@ def clean_color_name(raw):
     # Strip any leftover leading numeric/underscore prefix (e.g. "01_Black").
     s = re.sub(r"^[\d_]+[\s\-_]*", "", s).strip()
     return s
+
+
+def guess_column_index(options, preferred_name, keywords):
+    """
+    Picks a sensible default index into `options` for a Streamlit selectbox:
+      1. Exact match on `preferred_name` (case-insensitive) if present.
+      2. Otherwise, the first column whose name contains any of `keywords`
+         (case-insensitive substring match) -- e.g. "url", "link", "image".
+      3. Otherwise, falls back to 0 -- but this should be rare once (2) is in
+         place, and the person can always override the dropdown manually.
+    This avoids silently defaulting to the wrong column (like matching a
+    "Color Number" column as if it were an "Image URL" column) just because
+    the exact configured header name isn't present in the person's sheet.
+    """
+    norm_options = [str(o).strip().lower() for o in options]
+    preferred_norm = str(preferred_name).strip().lower()
+    if preferred_norm in norm_options:
+        return norm_options.index(preferred_norm)
+    for kw in keywords:
+        kw_norm = kw.strip().lower()
+        for i, opt in enumerate(norm_options):
+            if kw_norm in opt:
+                return i
+    return 0
 
 
 def normalize_match_text(s):
@@ -1033,8 +1057,8 @@ if image_file is not None:
     )
     ic1, ic2 = st.columns(2)
     with ic1:
-        default_img_sku_idx = (
-            img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
+        default_img_sku_idx = guess_column_index(
+            img_cols_available, image_sku_col, keywords=["color number", "colornumber", "color no", "color"]
         )
         image_sku_col = st.selectbox(
             "Color Number column in Image Sheet",
@@ -1043,14 +1067,20 @@ if image_file is not None:
             key="image_sku_col_select",
         )
     with ic2:
-        default_img_url_idx = (
-            img_cols_available.index(image_url_col) if image_url_col in img_cols_available else 0
+        default_img_url_idx = guess_column_index(
+            img_cols_available, image_url_col, keywords=["url", "link", "image"]
         )
         image_url_col = st.selectbox(
             "Image URL / Link column in Image Sheet",
             options=img_cols_available,
             index=default_img_url_idx,
             key="image_url_col_select",
+        )
+
+    if image_sku_col == image_url_col:
+        st.warning(
+            "⚠️ Color Number column and Image URL column are set to the SAME column "
+            "— images will not resolve correctly. Please pick two different columns above."
         )
 
 
