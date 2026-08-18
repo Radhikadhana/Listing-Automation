@@ -451,12 +451,19 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     return match.iloc[0].get(attr_col, "")
 
 
-def get_images_for_sku(sku, image_df, sku_col, image_cols):
+def get_images_for_key(lookup_value, image_df, lookup_col, image_cols):
+    """
+    Looks up image URLs in the Image Sheet by a lookup key. Per spec, this is
+    now the Model value (Style Number + Color Number combined) rather than
+    the item-level SKU -- images are shared across sizes of the same color,
+    so matching by the color-level identifier is what actually finds them in
+    an Image Sheet that's organized per color, not per individual SKU.
+    """
     if image_df is None or image_df.empty:
         return []
-    if sku_col not in image_df.columns:
+    if lookup_col not in image_df.columns:
         return []
-    row = image_df[image_df[sku_col].astype(str) == str(sku)]
+    row = image_df[image_df[lookup_col].astype(str).str.strip() == str(lookup_value).strip()]
     if row.empty:
         return []
     row = row.iloc[0]
@@ -576,6 +583,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         )
 
         style_number = first.get(mc["style_no"], "")
+        color_no_val = first.get(mc["color_no"], "")
         raw_desc = first.get(mc["description"], "")
         desc = clean_description(
             raw_desc,
@@ -583,6 +591,14 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             first.get(mc["care"], None),
             first.get(mc["care_label"], None),
         )
+
+        # Model = Style Number + Color Number combined, so each color variant
+        # of a style gets its own distinct Model value (previously Model was
+        # Style Number only, so every color of the same style showed the same
+        # Model number). Falls back to Style Number alone if Color Number is
+        # blank for a given row.
+        color_no_str = str(color_no_val).strip() if color_no_val not in (None, "") else ""
+        model_value = f"{style_number}_{color_no_str}" if color_no_str else str(style_number)
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
 
@@ -622,7 +638,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Size Chart Image URL": size_chart_image_url,
             "Tax Class": "Default",
             "Brand": "PUMA",
-            "Model": style_number,
+            "Model": model_value,
             "Warranty Type": "No Warranty",
             "Package Weight (kg)": 0.5,
             "Package Height(cm)": 15,
@@ -662,7 +678,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Product Specification 1": f"sku.color_family={color_name}",
                 "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
-                "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
+                "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"])),
             }
             rows.append(row)
             continue
@@ -671,6 +687,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # Variation 1 HEADER for the Parent row = "color_family"; Variation 2
         # HEADER for the Parent row = "size" (these are literal header labels,
         # not actual values). Total variation count appears ONLY on the Parent row.
+        # Images are looked up once per group (by Model = Style+Color) and
+        # shown on the Parent row too, since every child shares the same color.
+        parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"]))
         parent_row = {
             "Row Type": "Parent",
             **base_row,
@@ -681,6 +700,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Variation 1": "color_family",
             "Variation 2": "size",
             "Stock": 0,
+            "Images": parent_images,
         }
         rows.append(parent_row)
 
@@ -714,7 +734,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Product Specification 1": f"sku.color_family={color_name}",
                 "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
-                "Images": "; ".join(get_images_for_sku(sku, image_df, ic["sku"], ic["image_cols"])),
+                "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"])),
             }
             rows.append(child_row)
 
@@ -981,12 +1001,17 @@ if image_file is not None:
     image_file.seek(0)
     img_cols_available = list(_img_preview_df.columns)
 
-    st.markdown("#### 📌 Image Sheet — SKU Column Selection")
+    st.markdown("#### 📌 Image Sheet — Lookup Column Selection")
+    st.caption(
+        "Images are now matched by Model (Style Number + Color Number combined), "
+        "not the individual item SKU — pick the column in your Image Sheet that "
+        "holds that same Style+Color identifier."
+    )
     default_img_sku_idx = (
         img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
     )
     image_sku_col = st.selectbox(
-        "SKU column in Image Sheet",
+        "Style+Color (Model) lookup column in Image Sheet",
         options=img_cols_available,
         index=default_img_sku_idx,
         key="image_sku_col_select",
