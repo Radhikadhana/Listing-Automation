@@ -61,6 +61,21 @@ MASTER_COLS = {
     "age_group": "Age Group",
     "article_group": "Article Group",
     "article_type": "Article Type",
+    "activity_group": "Activity Group",
+    # --- Fields used to build the Short Description bullet list ---
+    "collection": "Collection",
+    "material": "Material",
+    "material_local": "Material (English)",
+    "upper_material": "Upper Material",
+    "mid_sole_material": "Mid Sole Material",
+    "outer_sole_material": "Outer Sole Material",
+    "shell_material": "Shell Material",
+    "toe_type": "Toe Type",
+    "heel_type": "Heel Type",
+    "fastener": "Fastener",
+    "fit": "Fit",
+    "puma_technology": "Puma Technology",
+    "technology_purpose": "Technology Purpose",
 }
 
 # Human-readable label + whether the field is required for a usable output,
@@ -87,6 +102,20 @@ MASTER_COLS_FIELDS = [
     ("age_group", "Age Group", False),
     ("article_group", "Article Group", False),
     ("article_type", "Article Type", False),
+    ("activity_group", "Activity Group (used in Short Description)", False),
+    ("collection", "Collection (used in Short Description)", False),
+    ("material", "Material (used in Short Description)", False),
+    ("material_local", "Material Local / English (used in Short Description)", False),
+    ("upper_material", "Upper Material (used in Short Description)", False),
+    ("mid_sole_material", "Mid Sole Material (used in Short Description)", False),
+    ("outer_sole_material", "Outer Sole Material (used in Short Description)", False),
+    ("shell_material", "Shell Material (used in Short Description)", False),
+    ("toe_type", "Toe Type (used in Short Description)", False),
+    ("heel_type", "Heel Type (used in Short Description)", False),
+    ("fastener", "Fastener (used in Short Description)", False),
+    ("fit", "Fit (used in Short Description)", False),
+    ("puma_technology", "PUMA Technology (used in Short Description)", False),
+    ("technology_purpose", "Technology Purpose (used in Short Description)", False),
 ]
 
 IMAGE_SHEET_COLS = {
@@ -564,6 +593,58 @@ def extract_productstory(raw_desc):
     return f"productstory={story_part}" if story_part else ""
 
 
+def _clean_field_value(val):
+    """Returns a trimmed string, or "" for blank/NaN/"Other" placeholder values."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val).strip()
+    if s == "" or s.lower() in ("nan", "other"):
+        return ""
+    return s
+
+
+def build_short_description(brand, color_name, gender, activity_group, collection,
+                             material, material_local, upper_material, mid_sole_material,
+                             outer_sole_material, shell_material, toe_type, heel_type,
+                             fastener, fit, puma_technology, technology_purpose, style_number):
+    """
+    Builds the Short Description as an HTML bullet list, exactly matching:
+      <ul><li>Brand : PUMA</li><li>Color Name : Orange</li><li>Gender : Unisex</li>
+      <li>Activity Group : Auto</li><li>Material : ...</li><li>Style Number : 27472</li></ul>
+
+    Each field is only included if it has a real (non-blank, non-"Other") value,
+    in a fixed field order. Style Number is always appended last if present.
+    """
+    fields = [
+        ("Brand", brand),
+        ("Color Name", color_name),
+        ("Gender", gender),
+        ("Activity Group", activity_group),
+        ("Collection", collection),
+        ("Material", material),
+        ("Material Local", material_local),
+        ("Upper Material", upper_material),
+        ("Mid Sole Material", mid_sole_material),
+        ("Outer Sole Material", outer_sole_material),
+        ("Shell Material", shell_material),
+        ("Toe Type", toe_type),
+        ("Heel Type", heel_type),
+        ("Fastener", fastener),
+        ("Fit", fit),
+        ("PUMA Technology", puma_technology),
+        ("Technology Purpose", technology_purpose),
+        ("Style Number", style_number),
+    ]
+
+    items = []
+    for label, raw_val in fields:
+        val = _clean_field_value(raw_val)
+        if val:
+            items.append(f"<li>{label} : {val}</li>")
+
+    return "<ul>" + "".join(items) + "</ul>"
+
+
 # ======================================================================================
 # CORE TRANSFORMATION
 # ======================================================================================
@@ -686,6 +767,30 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         template_attr_2 = extract_description_main(raw_desc)
         template_attr_3 = extract_productstory(raw_desc)
 
+        # --- Short Description: HTML bullet list built from group-level fields
+        # (every row in the group shares the same style+color, so these are
+        # read once from the group's first row, same as Title/Description). ---
+        short_description = build_short_description(
+            brand=_clean_field_value(first.get(mc["brand"], "")) or "PUMA",
+            color_name=clean_color_name(first.get(mc["color_name"], "")),
+            gender=gender_val,
+            activity_group=first.get(mc["activity_group"], ""),
+            collection=first.get(mc["collection"], ""),
+            material=first.get(mc["material"], ""),
+            material_local=first.get(mc["material_local"], ""),
+            upper_material=first.get(mc["upper_material"], ""),
+            mid_sole_material=first.get(mc["mid_sole_material"], ""),
+            outer_sole_material=first.get(mc["outer_sole_material"], ""),
+            shell_material=first.get(mc["shell_material"], ""),
+            toe_type=first.get(mc["toe_type"], ""),
+            heel_type=first.get(mc["heel_type"], ""),
+            fastener=first.get(mc["fastener"], ""),
+            fit=first.get(mc["fit"], ""),
+            puma_technology=first.get(mc["puma_technology"], ""),
+            technology_purpose=first.get(mc["technology_purpose"], ""),
+            style_number=style_number,
+        )
+
         # Group has multiple rows (variants) -> insert a Parent row first.
         total_variation_count = len(group_df)
         has_variants = total_variation_count > 1
@@ -695,6 +800,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Product Name": title,
             "Title": title,
             "Description": desc,
+            "Short Description": short_description,
             "Currency Code": currency_code,
             "Quantity": 0,
             "Category ID": category_id,
