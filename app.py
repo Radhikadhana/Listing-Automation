@@ -1032,13 +1032,9 @@ if image_file is not None:
 
     st.markdown("#### 📌 Image Sheet — Lookup Column Selection")
     st.caption(
-        "Images are matched by the bare Color Number suffix (e.g. \"01\", extracted "
-        "from your Master Sheet's \"695872_01\"-style Color Number code) — not the "
-        "individual item SKU. Pick the column in your Image Sheet that holds that "
-        "same bare Color Number. ⚠️ If two different styles share the same Color "
-        "Number suffix, they'll resolve to the same image row here — if your Image "
-        "Sheet is actually organized by the full Style+Color code instead, let us "
-        "know and we'll switch the lookup key back to the combined code."
+        "Images are matched by the FULL Color Number code from your Master Sheet "
+        "(e.g. \"695872_01\"), not the individual item SKU. Pick the column in your "
+        "Image Sheet that holds that same full Style+Color code."
     )
     default_img_sku_idx = (
         img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
