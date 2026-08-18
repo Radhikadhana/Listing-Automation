@@ -90,8 +90,8 @@ MASTER_COLS_FIELDS = [
 ]
 
 IMAGE_SHEET_COLS = {
-    "sku": "SKU",
-    "image_cols": ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6", "Image 7", "Image 8", "Image 9"],
+    "sku": "ColorNumber",  # long/tall format: one row per (ColorNumber, Link) pair
+    "url_col": "Link",     # every row matching a given ColorNumber contributes one URL
 }
 
 # Size Chart Sheet (NEW): a separate upload that provides the actual size
@@ -474,26 +474,36 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     return match.iloc[0].get(attr_col, "")
 
 
-def get_images_for_key(lookup_value, image_df, lookup_col, image_cols):
+def get_images_for_key(lookup_value, image_df, lookup_col, url_col):
     """
-    Looks up image URLs in the Image Sheet by a lookup key. Per spec, this is
-    now the Model value (Style Number + Color Number combined) rather than
-    the item-level SKU -- images are shared across sizes of the same color,
-    so matching by the color-level identifier is what actually finds them in
-    an Image Sheet that's organized per color, not per individual SKU.
+    Looks up image URLs in the Image Sheet by Color Number (the Model value).
+
+    The Image Sheet is a LONG/TALL format: one row per (ColorNumber, Link)
+    pair, with the SAME ColorNumber repeating across multiple rows -- one row
+    per image, not multiple image columns side-by-side on a single row. So
+    this collects EVERY row whose lookup column matches the given Color
+    Number and returns all of their URL values (in sheet order, duplicates
+    removed), rather than reading fixed "Image 1".."Image N" columns off a
+    single row.
     """
     if image_df is None or image_df.empty:
         return []
-    if lookup_col not in image_df.columns:
+    if lookup_col not in image_df.columns or url_col not in image_df.columns:
         return []
-    row = image_df[image_df[lookup_col].astype(str).str.strip() == str(lookup_value).strip()]
-    if row.empty:
+
+    lookup_norm = str(lookup_value).strip()
+    matches = image_df[image_df[lookup_col].astype(str).str.strip() == lookup_norm]
+    if matches.empty:
         return []
-    row = row.iloc[0]
+
     imgs = []
-    for c in image_cols:
-        if c in row and pd.notna(row[c]) and str(row[c]).strip():
-            imgs.append(str(row[c]).strip())
+    seen = set()
+    for val in matches[url_col]:
+        if pd.notna(val) and str(val).strip():
+            url = str(val).strip()
+            if url not in seen:
+                seen.add(url)
+                imgs.append(url)
     return imgs
 
 
@@ -537,7 +547,7 @@ def extract_productstory(raw_desc):
 def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         output_columns, price_col,
                         master_col_map=None,
-                        image_sku_col=None, image_cols=None,
+                        image_sku_col=None, image_url_col=None,
                         size_chart_key_col=None, size_chart_attr_col=None,
                         category_keyword_col=None, category_id_col=None,
                         size_chart_image_df=None,
@@ -558,7 +568,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     # to CONFIG defaults only if the caller didn't supply a runtime choice.
     ic = {
         "sku": image_sku_col if image_sku_col else IMAGE_SHEET_COLS["sku"],
-        "image_cols": image_cols if image_cols else IMAGE_SHEET_COLS["image_cols"],
+        "url_col": image_url_col if image_url_col else IMAGE_SHEET_COLS["url_col"],
     }
     sct = {
         "key": size_chart_key_col if size_chart_key_col else SIZE_CHART_TEMPLATE_COLS["key"],
@@ -696,7 +706,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # NOTE: a Parent row is ALWAYS created, even for a group with only a
         # single SKU / no size or color variants -- every SKU gets a Parent
         # above it, matching the marketplace bulk-upload structure exactly.
-        parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"]))
+        parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
             "Row Type": "Parent",
             **base_row,
@@ -741,7 +751,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Product Specification 1": f"sku.color_family={color_name}",
                 "Product Specification 2": f"sku.size={formatted_size}",
                 "Stock": 0,
-                "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"])),
+                "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"])),
             }
             rows.append(child_row)
 
@@ -1002,27 +1012,42 @@ if category_file is not None:
 
 # --- Image Sheet column picker ---
 image_sku_col = IMAGE_SHEET_COLS["sku"]
+image_url_col = IMAGE_SHEET_COLS["url_col"]
 
 if image_file is not None:
     _img_preview_df = load_any(image_file)
     image_file.seek(0)
     img_cols_available = list(_img_preview_df.columns)
 
-    st.markdown("#### 📌 Image Sheet — Lookup Column Selection")
+    st.markdown("#### 📌 Image Sheet — Column Selection")
     st.caption(
-        "Images are matched by the FULL Color Number code from your Master Sheet "
-        "(e.g. \"695872_01\"), not the individual item SKU. Pick the column in your "
-        "Image Sheet that holds that same full Style+Color code."
+        "Your Image Sheet is a long/tall list — one row per image, with the SAME "
+        "Color Number repeating across multiple rows. Every row matching a given "
+        "Color Number contributes one image link, so pick BOTH the Color Number "
+        "column and the URL/Link column below (not a set of 'Image 1'..'Image N' "
+        "columns)."
     )
-    default_img_sku_idx = (
-        img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
-    )
-    image_sku_col = st.selectbox(
-        "Color Number (Model) lookup column in Image Sheet",
-        options=img_cols_available,
-        index=default_img_sku_idx,
-        key="image_sku_col_select",
-    )
+    ic1, ic2 = st.columns(2)
+    with ic1:
+        default_img_sku_idx = (
+            img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
+        )
+        image_sku_col = st.selectbox(
+            "Color Number column in Image Sheet",
+            options=img_cols_available,
+            index=default_img_sku_idx,
+            key="image_sku_col_select",
+        )
+    with ic2:
+        default_img_url_idx = (
+            img_cols_available.index(image_url_col) if image_url_col in img_cols_available else 0
+        )
+        image_url_col = st.selectbox(
+            "Image URL / Link column in Image Sheet",
+            options=img_cols_available,
+            index=default_img_url_idx,
+            key="image_url_col_select",
+        )
 
 
 if st.button("🚀 Generate Upload Sheet", type="primary"):
@@ -1047,6 +1072,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     price_col=price_col,
                     master_col_map=master_col_map,
                     image_sku_col=image_sku_col,
+                    image_url_col=image_url_col,
                     size_chart_key_col=size_chart_key_col,
                     size_chart_attr_col=size_chart_attr_col,
                     category_keyword_col=category_keyword_col,
