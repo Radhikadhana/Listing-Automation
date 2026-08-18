@@ -730,6 +730,26 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # NOTE: a Parent row is ALWAYS created, even for a group with only a
         # single SKU / no size or color variants -- every SKU gets a Parent
         # above it, matching the marketplace bulk-upload structure exactly.
+        # --- Sort child records FIRST so the Parent row can inherit the
+        # first child's Product Specification 1/2 values (per spec: the
+        # Parent row should show the first variant's spec values instead of
+        # being left blank/"None"). ---
+        child_records = group_df.to_dict("records")
+        child_records.sort(
+            key=lambda r: (
+                str(r.get(mc["color_family"], "")),
+                str(r.get(mc["color_name"], "")),
+                size_sort_key(r.get(mc["uk_size"], r.get(mc["size"], "")), footwear),
+            )
+        )
+
+        first_child_color_name = ""
+        first_child_formatted_size = ""
+        if child_records:
+            first_rec = child_records[0]
+            first_child_color_name = clean_color_name(first_rec.get(mc["color_name"], ""))
+            first_child_formatted_size = format_size_value(first_rec.get(mc["uk_size"], ""), footwear)
+
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
             "Row Type": "Parent",
@@ -744,19 +764,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Images": parent_images,
             "Product Image URL(s)": parent_images,
             "Image URL": parent_images,
+            # Parent inherits the first child's spec values instead of being blank.
+            "Product Specification 1": f"sku.color_family={first_child_color_name}",
+            "Product Specification 2": f"sku.size={first_child_formatted_size}",
         }
         rows.append(parent_row)
 
         # --- Child rows: variation1 = color no/style option, variation2 = size option. ---
-        child_records = group_df.to_dict("records")
-        child_records.sort(
-            key=lambda r: (
-                str(r.get(mc["color_family"], "")),
-                str(r.get(mc["color_name"], "")),
-                size_sort_key(r.get(mc["uk_size"], r.get(mc["size"], "")), footwear),
-            )
-        )
-
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
             color_name = clean_color_name(rec.get(mc["color_name"], ""))
