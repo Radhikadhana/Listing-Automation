@@ -160,6 +160,29 @@ ALPHA_SIZE_ORDER = ["XXXS", "XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "OS
 # HELPERS
 # ======================================================================================
 
+def extract_pure_color_number(raw):
+    """
+    Your Master Sheet's "Color Number" field stores a COMBINED
+    StyleNumber_ColorSuffix code (e.g. "695872_01"), matching PUMA's own
+    convention -- not a bare color code on its own. For the Model field (and
+    the Image Sheet lookup key), only the trailing color suffix is wanted
+    (e.g. "01"), with the Style Number prefix stripped off.
+
+    "695872_01"  -> "01"
+    "054950_08"  -> "08"
+    "01"         -> "01"   (already bare -- left as-is)
+    ""  / None   -> ""
+    """
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return ""
+    s = str(raw).strip()
+    if s.lower() in ("", "nan"):
+        return ""
+    if "_" in s:
+        return s.rsplit("_", 1)[-1].strip()
+    return s
+
+
 def clean_color_name(raw):
     """
     Cleans a color field down to a plain color name, stripping any leading
@@ -592,10 +615,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             first.get(mc["care_label"], None),
         )
 
-        # Model = Color Number ONLY (not Style Number), so each color variant
-        # of a style gets its own distinct Model value. Falls back to Style
-        # Number only if Color Number is blank for a given row.
-        color_no_str = str(color_no_val).strip() if color_no_val not in (None, "") else ""
+        # Model = the bare Color Number suffix (e.g. "01"), extracted from the
+        # Master Sheet's combined "StyleNumber_ColorSuffix" Color Number code
+        # (e.g. "695872_01" -> "01"). Falls back to Style Number only if
+        # Color Number is blank for a given row.
+        color_no_str = extract_pure_color_number(color_no_val)
         model_value = color_no_str if color_no_str else str(style_number)
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
@@ -1001,9 +1025,13 @@ if image_file is not None:
 
     st.markdown("#### 📌 Image Sheet — Lookup Column Selection")
     st.caption(
-        "Images are now matched by Model (Color Number only), not the "
-        "individual item SKU — pick the column in your Image Sheet that "
-        "holds that same Color Number."
+        "Images are matched by the bare Color Number suffix (e.g. \"01\", extracted "
+        "from your Master Sheet's \"695872_01\"-style Color Number code) — not the "
+        "individual item SKU. Pick the column in your Image Sheet that holds that "
+        "same bare Color Number. ⚠️ If two different styles share the same Color "
+        "Number suffix, they'll resolve to the same image row here — if your Image "
+        "Sheet is actually organized by the full Style+Color code instead, let us "
+        "know and we'll switch the lookup key back to the combined code."
     )
     default_img_sku_idx = (
         img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
