@@ -621,11 +621,12 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             first.get(mc["care_label"], None),
         )
 
-        # Model = the bare Color Number suffix (e.g. "01"), extracted from the
-        # Master Sheet's combined "StyleNumber_ColorSuffix" Color Number code
-        # (e.g. "695872_01" -> "01"). Falls back to Style Number only if
-        # Color Number is blank for a given row.
-        color_no_str = extract_pure_color_number(color_no_val)
+        # Model = the FULL Color Number code as it appears in the Master Sheet
+        # (e.g. "695872_01") -- since each group is now a single style+color
+        # combination, this correctly repeats across every size of that one
+        # color, and differs across different colors/styles. Falls back to
+        # Style Number only if Color Number is blank for a given row.
+        color_no_str = str(color_no_val).strip() if color_no_val not in (None, "") and str(color_no_val).strip().lower() != "nan" else ""
         model_value = color_no_str if color_no_str else str(style_number)
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
@@ -681,9 +682,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         }
 
         # Parent SKU: the group's own identifying SKU. Since every group is
-        # now a single style+color combination, this is the BARE Color
-        # Number suffix (e.g. "01", matching the Model field) -- not the
-        # combined Style_Color code, and not the Style Number.
+        # now a single style+color combination, this is the FULL Color
+        # Number code (e.g. "695872_01", matching the Model field).
         parent_sku_value = model_value
 
         if not has_variants:
