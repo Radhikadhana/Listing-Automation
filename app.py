@@ -579,15 +579,21 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     rows = []
     master_df = master_df.copy()
 
-    # --- Grouping key: distinct Style Number (non-footwear) OR distinct
-    # Color Number (footwear), both determined via Product Division checks. ---
+    # --- Grouping key: distinct COLOR (Color Number), for ALL divisions.
+    # A group must always be a single style + single color combination, so
+    # every color of a style gets its own separate Parent row and its own
+    # set of Child rows -- sizes are the only thing that varies within a
+    # group. (Color Number already encodes "StyleNumber_ColorSuffix" per
+    # your Master Sheet convention, e.g. "695872_01", so grouping by it
+    # alone is sufficient to separate different styles too.)
     def group_key(r):
-        ptype = r.get(mc["product_type"], "")
-        if is_footwear(ptype):
-            color_no = r.get(mc["color_no"], "")
-            return f"footwear__{color_no}"
+        color_no = r.get(mc["color_no"], "")
+        if color_no not in (None, "") and str(color_no).strip() not in ("", "nan"):
+            return f"color__{color_no}"
+        # Fallback when Color Number is missing for a row: group by Style
+        # Number alone so it doesn't silently vanish or merge incorrectly.
         style = r.get(mc["style_no"], "")
-        return f"other__{style}"
+        return f"style__{style}"
 
     master_df["_group_key"] = master_df.apply(group_key, axis=1)
 
@@ -674,10 +680,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Marketplace": marketplace,
         }
 
-        # Parent SKU: the group's own identifying SKU (Style Number for
-        # non-footwear, Color Number for Footwear per the grouping rule above).
-        # Used so every child row can reference which parent it belongs to.
-        parent_sku_value = first.get(mc["color_no"], "") if footwear else first.get(mc["style_no"], "")
+        # Parent SKU: the group's own identifying SKU. Since every group is
+        # now a single style+color combination, this is the BARE Color
+        # Number suffix (e.g. "01", matching the Model field) -- not the
+        # combined Style_Color code, and not the Style Number.
+        parent_sku_value = model_value
 
         if not has_variants:
             # Single row, no variants: no separate Parent row needed — write directly.
