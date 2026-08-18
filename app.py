@@ -686,38 +686,16 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         # Number code (e.g. "695872_01", matching the Model field).
         parent_sku_value = model_value
 
-        if not has_variants:
-            # Single row, no variants: no separate Parent row needed — write directly.
-            single = group_df.iloc[0]
-            sku = single.get(mc["sku"], "")
-            color_name = clean_color_name(single.get(mc["color_name"], ""))
-            uk_size_raw = single.get(mc["uk_size"], "")
-            formatted_size = format_size_value(uk_size_raw, footwear)
-            row = {
-                "Row Type": "Parent",
-                **base_row,
-                "SKU": sku,
-                "Seller SKU": sku,
-                "Parent SKU": parent_sku_value,
-                "Total variation": total_variation_count,
-                "RRP": get_price(single, price_col),
-                # Variation 1 fetches Color Name directly from the Master Input Sheet.
-                "Variation 1": color_name,
-                "Variation 2": formatted_size,
-                "Product Specification 1": f"sku.color_family={color_name}",
-                "Product Specification 2": f"sku.size={formatted_size}",
-                "Stock": 0,
-                "Images": "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"])),
-            }
-            rows.append(row)
-            continue
-
         # --- Parent row: write group-level details (title, brand, price type). ---
         # Variation 1 HEADER for the Parent row = "color_family"; Variation 2
         # HEADER for the Parent row = "size" (these are literal header labels,
         # not actual values). Total variation count appears ONLY on the Parent row.
         # Images are looked up once per group (by Model = Style+Color) and
         # shown on the Parent row too, since every child shares the same color.
+        #
+        # NOTE: a Parent row is ALWAYS created, even for a group with only a
+        # single SKU / no size or color variants -- every SKU gets a Parent
+        # above it, matching the marketplace bulk-upload structure exactly.
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["image_cols"]))
         parent_row = {
             "Row Type": "Parent",
