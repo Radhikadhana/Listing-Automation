@@ -99,7 +99,7 @@ MASTER_COLS_FIELDS = [
     ("description", "Description", True),
     ("care", "Care", False),
     ("care_label", "Care Label", False),
-    ("footwear_color", "Footwear Color (used in Title for Footwear)", False),
+    ("footwear_color", "Footwear Color (legacy, no longer used in Title)", False),
     ("product_type", "Product Division (Footwear/Apparel/Accessories)", True),
     ("age_group", "Age Group", False),
     ("article_group", "Article Group", False),
@@ -129,7 +129,7 @@ IMAGE_SHEET_COLS = {
 # chart IMAGE URL, matched by a title/keyword reference — this feeds the
 # "Size Chart Image URL" output column. This is distinct from the Size Chart
 # TEMPLATE Sheet below, which feeds "Template Attribute 1" via a direct
-# composite-key lookup (Age Group-Gender-Article Group-Article Type).
+# Gender+Article Group key lookup.
 SIZE_CHART_IMAGE_COLS = {
     "title_keyword": "Title",       # keyword/phrase matched against the generated product Title
     "image_url": "Size Chart Image URL",  # the literal image URL to output
@@ -137,12 +137,13 @@ SIZE_CHART_IMAGE_COLS = {
 }
 
 # Size Chart TEMPLATE sheet (replaces old free-text Size Chart Sheet).
-# Expected columns: a lookup key (Age Group-Gender-Article Group-Article Type,
-# same composite key used elsewhere) and the literal Template Attribute 1 value
-# to place on the row — no keyword matching, no URL, just a direct key lookup.
+# Expected columns: a lookup key of "Gender-Article Group" (e.g. "Men-Caps")
+# and the raw Template Attribute 1 value (e.g. "Cap") -- the app
+# automatically formats it as "sizechart=Cap" in the output, no need to
+# include the "sizechart=" prefix in the sheet itself.
 SIZE_CHART_TEMPLATE_COLS = {
-    "key": "Size Chart Key",                 # e.g. "Adult-Men-Tops-Tee"
-    "template_attribute_1": "Template Attribute 1",  # literal string to output, e.g. "sizechart=Men Tops"
+    "key": "Size Chart Key",                 # e.g. "Men-Caps"
+    "template_attribute_1": "Template Attribute 1",  # raw value, e.g. "Cap" -> output becomes "sizechart=Cap"
 }
 
 CATEGORY_SHEET_COLS = {
@@ -282,20 +283,24 @@ def normalize_match_text(s):
     return s
 
 
-def clean_title(brand, gender, title, footwear_color_raw, is_footwear):
+def clean_title(brand, gender, title, search_color_name_raw, is_footwear=None):
     """
     Build title per spec:
-    [NEW] [Brand] [Gender] [Regional Display Name] [Color (if Footwear)]
+    [NEW] [Brand] [Gender] [Regional Display Name] [Search Color Name]
     Gender is now ALWAYS included when present (not just when it's "Unisex").
-    The footwear color is cleaned via clean_color_name() first, so a raw
-    Color Number / Style_Color code never ends up in the title -- only an
-    actual color name (e.g. "Black", not "309707_03" or "10 - Black").
+    The Search Color Name is now appended for EVERY division (Footwear,
+    Apparel, Accessories) -- not just Footwear -- and is cleaned via
+    clean_color_name() first, so a raw Color Number / Style_Color code (or
+    a "10 - White" style code) never ends up in the title, only the plain
+    color name itself (e.g. "White").
+    `is_footwear` is accepted but no longer changes this behavior; kept for
+    backward compatibility with existing call sites.
     """
     title = title or ""
     for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
 
-    footwear_color = clean_color_name(footwear_color_raw)
+    search_color_name = clean_color_name(search_color_name_raw)
 
     parts = ["[NEW]"]
     if brand:
@@ -304,8 +309,8 @@ def clean_title(brand, gender, title, footwear_color_raw, is_footwear):
         parts.append(str(gender).strip())
     if title:
         parts.append(title.strip())
-    if is_footwear and footwear_color:
-        parts.append(footwear_color)
+    if search_color_name:
+        parts.append(search_color_name)
 
     # remove duplicate words anywhere in the title (case-insensitive), preserve first occurrence
     seen = set()
@@ -503,19 +508,23 @@ def count_groups_by_division(master_df, mc):
     return counts
 
 
-def build_size_chart_key(age_group, gender, article_group, article_type):
-    """Composite lookup key used against the Size Chart Template Sheet."""
-    parts = [age_group, gender, article_group, article_type]
+def build_size_chart_key(gender, article_group):
+    """
+    Lookup key used against the Size Chart Template Sheet -- per spec, this
+    is now based on Gender + Article Group only (e.g. "Men-Caps"),
+    not the full Age Group-Gender-Article Group-Article Type composite.
+    """
+    parts = [gender, article_group]
     return "-".join(str(p).strip() if p is not None else "" for p in parts)
 
 
 def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
     """
     Direct key lookup (NOT keyword/title matching) against the Size Chart
-    Template Sheet. Returns the literal Template Attribute 1 string, or ""
-    if the key isn't found or either expected column is missing from the
-    uploaded sheet (missing columns are treated as "no data available" —
-    not a crash — since the sheet is optional).
+    Template Sheet. Returns the value formatted as "sizechart=<value>"
+    (e.g. "sizechart=Cap"), or "" if the key isn't found or either expected
+    column is missing from the uploaded sheet (missing columns are treated
+    as "no data available" -- not a crash -- since the sheet is optional).
     """
     if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
@@ -526,7 +535,9 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     ]
     if match.empty:
         return ""
-    return match.iloc[0].get(attr_col, "")
+    raw_val = match.iloc[0].get(attr_col, "")
+    val = _clean_field_value(raw_val) if raw_val is not None else ""
+    return f"sizechart={val}" if val else ""
 
 
 def get_images_for_key(lookup_value, image_df, lookup_col, url_col):
@@ -766,12 +777,15 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         footwear = is_footwear(ptype)
 
         gender_val = first.get(mc["gender"], "")
+        # Search Color Name is used in the Title for EVERY division now
+        # (Footwear, Apparel, Accessories) -- falls back to the Color Name
+        # field if Search Color Name isn't mapped/available.
+        title_color_raw = first.get(mc["search_color_name"], "") or first.get(mc["color_name"], "")
         title = clean_title(
             first.get(mc["brand"], ""),
             gender_val,
             first.get(mc["title"], ""),
-            first.get(mc["footwear_color"], "") if footwear else "",
-            footwear,
+            title_color_raw,
         )
 
         style_number = first.get(mc["style_no"], "")
@@ -794,12 +808,10 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
 
-        # --- Size Chart Template lookup (direct key match) -> "Template Attribute 1" ---
+        # --- Size Chart Template lookup (Gender + Article Group key match) -> "Template Attribute 1" ---
         size_chart_key = build_size_chart_key(
-            first.get(mc["age_group"], ""),
             gender_val,
             first.get(mc["article_group"], ""),
-            first.get(mc["article_type"], ""),
         )
         template_attr_1 = match_size_chart_template(
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
@@ -1100,7 +1112,7 @@ if size_chart_template_file is not None:
             sct_cols_available.index(size_chart_key_col) if size_chart_key_col in sct_cols_available else 0
         )
         size_chart_key_col = st.selectbox(
-            "Lookup key column (Age Group-Gender-Article Group-Article Type)",
+            "Lookup key column (Gender-Article Group)",
             options=sct_cols_available,
             index=default_key_idx,
             key="size_chart_key_col_select",
