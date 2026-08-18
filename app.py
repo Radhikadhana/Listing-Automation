@@ -592,13 +592,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             first.get(mc["care_label"], None),
         )
 
-        # Model = Style Number + Color Number combined, so each color variant
-        # of a style gets its own distinct Model value (previously Model was
-        # Style Number only, so every color of the same style showed the same
-        # Model number). Falls back to Style Number alone if Color Number is
-        # blank for a given row.
+        # Model = Color Number ONLY (not Style Number), so each color variant
+        # of a style gets its own distinct Model value. Falls back to Style
+        # Number only if Color Number is blank for a given row.
         color_no_str = str(color_no_val).strip() if color_no_val not in (None, "") else ""
-        model_value = f"{style_number}_{color_no_str}" if color_no_str else str(style_number)
+        model_value = color_no_str if color_no_str else str(style_number)
 
         category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
 
@@ -1003,15 +1001,15 @@ if image_file is not None:
 
     st.markdown("#### 📌 Image Sheet — Lookup Column Selection")
     st.caption(
-        "Images are now matched by Model (Style Number + Color Number combined), "
-        "not the individual item SKU — pick the column in your Image Sheet that "
-        "holds that same Style+Color identifier."
+        "Images are now matched by Model (Color Number only), not the "
+        "individual item SKU — pick the column in your Image Sheet that "
+        "holds that same Color Number."
     )
     default_img_sku_idx = (
         img_cols_available.index(image_sku_col) if image_sku_col in img_cols_available else 0
     )
     image_sku_col = st.selectbox(
-        "Style+Color (Model) lookup column in Image Sheet",
+        "Color Number (Model) lookup column in Image Sheet",
         options=img_cols_available,
         index=default_img_sku_idx,
         key="image_sku_col_select",
