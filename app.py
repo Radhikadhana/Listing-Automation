@@ -622,11 +622,21 @@ def extract_description_main(raw_desc):
 
 
 def extract_productstory(raw_desc):
-    """Extract FEATURES & BENEFITS + DETAILS sections (raw HTML) for Template Attribute 3."""
+    """
+    Extract FEATURES & BENEFITS + DETAILS sections (raw HTML) for the
+    "productstory=" Template Attribute output. Matches from the OPENING
+    <h3> tag itself (not from the word "FEATURES" inside it), so the tag
+    is preserved:
+      productstory=<h3>FEATURES & BENEFITS </h3><ul>...</ul><h3> DETAILS </h3><ul>...</ul>
+    """
     if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
         return ""
     desc = str(raw_desc)
-    match = re.search(r"(FEATURES\s*(&|\+)\s*BENEFITS.*)", desc, flags=re.IGNORECASE | re.DOTALL)
+    match = re.search(
+        r"(<h[1-6]>\s*features\s*(&|\+)\s*benefits.*)",
+        desc,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     story_part = match.group(1).strip() if match else ""
     return f"productstory={story_part}" if story_part else ""
 
