@@ -95,10 +95,9 @@ IMAGE_SHEET_COLS = {
 }
 
 SIZE_CHART_IMAGE_COLS = {
-    "composite_key": "Size Chart Key",  # e.g. "Adult-Men-Tops-Tee-Auto" (AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup)
-    "title_keyword": "Title",       # fallback only, if composite key doesn't match
+    "title_keyword": "Title",
     "image_url": "Size Chart Image URL",
-    "style_no": "Style Number",     # optional exact-match, tried before composite key
+    "style_no": "Style Number",
 }
 
 SIZE_CHART_TEMPLATE_COLS = {
@@ -268,54 +267,10 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
-def build_size_chart_image_key(age_group, gender, article_group, article_type, activity_group):
-    """
-    Composite lookup key for the Size Chart Image URL, built from:
-      AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup
-    e.g. "Adult-Men-Tops-Tee-Auto". This is the PRIMARY match strategy for
-    resolving which size chart image applies to a given product.
-    """
-    parts = [age_group, gender, article_group, article_type, activity_group]
-    return "-".join(str(p).strip() if p is not None else "" for p in parts)
-
-
 def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
-                            style_number=None, style_col=None,
-                            composite_key=None, composite_key_col=None):
-    """
-    Resolves the Size Chart Image URL for a product. Three strategies, tried
-    in order (most reliable first):
-
-      1. COMPOSITE KEY exact match (PRIMARY): AgeGroup-Gender-ArticleGroup-
-         ArticleType-ActivityGroup, matched exactly against the Size Chart
-         Sheet's key column -- e.g. "Adult-Men-Tops-Tee-Auto".
-      2. STYLE NUMBER exact match: if the Size Chart Sheet has a
-         style-number column mapped, match it exactly against this group's
-         Style Number.
-      3. TITLE keyword match (fallback): longest normalized keyword-in-title
-         match against the product Title, used only if neither of the above
-         resolves anything.
-
-    Returns "" if no sheet is uploaded, expected columns aren't found, or
-    nothing matches via any strategy.
-    """
+                            style_number=None, style_col=None):
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
-
-    # --- Strategy 1: composite AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup key match ---
-    if (composite_key_col and composite_key not in (None, "")
-            and composite_key_col in size_chart_image_df.columns
-            and url_col in size_chart_image_df.columns):
-        norm_key = str(composite_key).strip().lower()
-        key_match = size_chart_image_df[
-            size_chart_image_df[composite_key_col].astype(str).str.strip().str.lower() == norm_key
-        ]
-        if not key_match.empty:
-            val = key_match.iloc[0].get(url_col, "")
-            if val and str(val).strip():
-                return val
-
-    # --- Strategy 2: exact Style Number match ---
     if style_col and style_number not in (None, "") and style_col in size_chart_image_df.columns and url_col in size_chart_image_df.columns:
         norm_style = str(style_number).strip().lower()
         style_match = size_chart_image_df[
@@ -325,8 +280,6 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
             val = style_match.iloc[0].get(url_col, "")
             if val and str(val).strip():
                 return val
-
-    # --- Strategy 3: normalized keyword-in-title match (last resort) ---
     if title_col not in size_chart_image_df.columns or url_col not in size_chart_image_df.columns:
         return ""
     title_norm = normalize_match_text(title)
@@ -507,7 +460,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         size_chart_image_df=None,
                         size_chart_image_title_col=None, size_chart_image_url_col=None,
                         size_chart_image_style_col=None,
-                        size_chart_image_composite_key_col=None,
                         region="PH", marketplace="Lazada"):
     mc = dict(MASTER_COLS)
     if master_col_map:
@@ -529,7 +481,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
         "image_url": size_chart_image_url_col if size_chart_image_url_col else SIZE_CHART_IMAGE_COLS["image_url"],
         "style_no": size_chart_image_style_col,
-        "composite_key": size_chart_image_composite_key_col,  # optional; None means "not mapped, skip this match"
     }
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
@@ -582,21 +533,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
         )
 
-        # --- Size Chart Image URL: now matched PRIMARILY by AgeGroup-Gender-
-        # ArticleGroup-ArticleType-ActivityGroup composite key from the Master
-        # Input Sheet, with Style Number exact match and Title keyword match
-        # kept as fallbacks if the composite key doesn't resolve anything. ---
-        size_chart_image_key = build_size_chart_image_key(
-            first.get(mc["age_group"], ""),
-            gender_val,
-            first.get(mc["article_group"], ""),
-            first.get(mc["article_type"], ""),
-            first.get(mc["activity_group"], ""),
-        )
+        # --- Size Chart Image URL: now matched strictly by the generated TITLE
+        # (normalized keyword-in-title match), per updated spec. Style Number
+        # exact match is still tried first when available, as a more reliable
+        # anchor before falling back to the title-based match. ---
         size_chart_image_url = match_size_chart_image(
             title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
             style_number=style_number, style_col=sci["style_no"],
-            composite_key=size_chart_image_key, composite_key_col=sci["composite_key"],
         )
 
         template_attr_2 = extract_description_main(raw_desc)
@@ -664,12 +607,10 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         first_child_color_name = ""
         first_child_formatted_size = ""
-        first_child_price = ""
         if child_records:
             first_rec = child_records[0]
             first_child_color_name = clean_color_name(first_rec.get(mc["color_name"], ""))
             first_child_formatted_size = format_size_value(first_rec.get(mc["uk_size"], ""), footwear)
-            first_child_price = get_price(first_rec, price_col)
 
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
@@ -682,15 +623,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Variation 1": "color_family",
             "Variation 2": "size",
             "Stock": 0,
-            # RRP inherits the first (sorted) child's price instead of being
-            # left blank -- same pattern already used for Product Spec 1/2.
-            "RRP": first_child_price,
             "Images": parent_images,
             "Product Image URL(s)": parent_images,
-            "Product Image URLs": parent_images,
-            "Product Images": parent_images,
             "Image URL": parent_images,
-            "Image URL(s)": parent_images,
             "Product Specification 1": f"sku.color_family={first_child_color_name}",
             "Product Specification 2": f"sku.size={first_child_formatted_size}",
         }
@@ -718,10 +653,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Stock": 0,
                 "Images": child_images,
                 "Product Image URL(s)": child_images,
-                "Product Image URLs": child_images,
-                "Product Images": child_images,
                 "Image URL": child_images,
-                "Image URL(s)": child_images,
             }
             rows.append(child_row)
 
@@ -879,33 +811,17 @@ if size_chart_image_file is not None:
 
     st.markdown("#### 📌 Size Chart Sheet — Column Selection")
     st.caption(
-        "PRIMARY match: pick the composite key column below, matched against "
-        "AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup from your Master "
-        "Sheet (e.g. \"Adult-Men-Tops-Tee-Auto\"). Style Number and Title are "
-        "fallback matches, used only if the composite key doesn't resolve anything."
+        "The Title column here is matched (normalized keyword match) against each "
+        "product's generated Title — the longest matching row wins. Its Image URL "
+        "fills the 'Size Chart Image URL' output column."
     )
-
-    sci_none_option = "— not in my sheet / skip —"
-    sci_key_options = [sci_none_option] + sci_cols_available
-    default_sci_key_idx = (
-        sci_key_options.index(SIZE_CHART_IMAGE_COLS["composite_key"])
-        if SIZE_CHART_IMAGE_COLS["composite_key"] in sci_key_options else 0
-    )
-    _sci_key_choice = st.selectbox(
-        "Size Chart Key column (AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup)",
-        options=sci_key_options,
-        index=default_sci_key_idx,
-        key="size_chart_image_composite_key_col_select",
-    )
-    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
-
     sci1, sci2 = st.columns(2)
     with sci1:
         default_sci_title_idx = (
             sci_cols_available.index(size_chart_image_title_col) if size_chart_image_title_col in sci_cols_available else 0
         )
         size_chart_image_title_col = st.selectbox(
-            "Title column (fallback match against generated product Title)",
+            "Title column (matched against generated product Title)",
             options=sci_cols_available,
             index=default_sci_title_idx,
             key="size_chart_image_title_col_select",
@@ -923,8 +839,9 @@ if size_chart_image_file is not None:
 
     st.caption(
         "Optional: if your Size Chart Sheet also has a Style Number column, mapping "
-        "it here gives an exact match tried BEFORE the Title fallback."
+        "it here gives an exact match tried BEFORE the Title match above."
     )
+    sci_none_option = "— not in my sheet / skip —"
     sci_style_options = [sci_none_option] + sci_cols_available
     default_sci_style_idx = (
         sci_style_options.index(SIZE_CHART_IMAGE_COLS["style_no"])
@@ -939,7 +856,6 @@ if size_chart_image_file is not None:
     size_chart_image_style_col = None if _sci_style_choice == sci_none_option else _sci_style_choice
 else:
     size_chart_image_style_col = None
-    size_chart_image_composite_key_col = None
 
 category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
 category_id_col = CATEGORY_SHEET_COLS["category_id"]
@@ -1045,7 +961,6 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_image_title_col=size_chart_image_title_col,
                     size_chart_image_url_col=size_chart_image_url_col,
                     size_chart_image_style_col=size_chart_image_style_col,
-                    size_chart_image_composite_key_col=size_chart_image_composite_key_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
@@ -1057,23 +972,6 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 st.stop()
 
         st.success(f"Generated {len(result_df)} rows ({parent_count} parent, {child_count} child).")
-
-        # Diagnostic: flag if the Sample Upload Format's image column header
-        # doesn't match any of the aliases the app writes to, so a mismatch
-        # is visible immediately instead of silently producing a blank column.
-        known_image_aliases = {
-            "images", "product image url(s)", "product image urls",
-            "product images", "image url", "image url(s)",
-        }
-        sample_headers_lower = {str(c).strip().lower() for c in output_columns}
-        if not (known_image_aliases & sample_headers_lower):
-            st.warning(
-                "⚠️ None of your Sample Upload Format's columns matched a known image-column "
-                "name (Images / Product Image URL(s) / Product Image URLs / Product Images / "
-                "Image URL / Image URL(s)). If your sample uses a different header for images, "
-                "let us know its exact name and we'll add it as an alias."
-            )
-
         st.dataframe(result_df, use_container_width=True)
 
         buffer = io.BytesIO()
