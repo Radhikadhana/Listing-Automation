@@ -300,6 +300,8 @@ def format_size_value(uk_size, is_footwear_row):
     if uk_size is None or (isinstance(uk_size, float) and pd.isna(uk_size)) or str(uk_size).strip() == "":
         return ""
     s = str(uk_size).strip()
+    if s.upper() == "OSFA":
+        s = "One size"
     if is_footwear_row:
         return f"UK:{s}"
     return f"Int:{s}"
@@ -607,10 +609,12 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
         first_child_color_name = ""
         first_child_formatted_size = ""
+        first_child_price = ""
         if child_records:
             first_rec = child_records[0]
             first_child_color_name = clean_color_name(first_rec.get(mc["color_name"], ""))
             first_child_formatted_size = format_size_value(first_rec.get(mc["uk_size"], ""), footwear)
+            first_child_price = get_price(first_rec, price_col)
 
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
@@ -623,6 +627,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Variation 1": "color_family",
             "Variation 2": "size",
             "Stock": 0,
+            "RRP": first_child_price,
             "Images": parent_images,
             "Product Image URL(s)": parent_images,
             "Image URL": parent_images,
