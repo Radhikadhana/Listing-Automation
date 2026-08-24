@@ -95,7 +95,6 @@ IMAGE_SHEET_COLS = {
 }
 
 SIZE_CHART_IMAGE_COLS = {
-    "composite_key": "Size Chart Key",  # AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup
     "title_keyword": "Title",
     "image_url": "Size Chart Image URL",
     "style_no": "Style Number",
@@ -287,42 +286,10 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
-def build_size_chart_image_key(age_group, gender, article_group, article_type, activity_group):
-    """
-    Composite lookup key for the Size Chart Image URL, built from:
-      AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup
-    e.g. "Adult-Men-Tops-Tee-Auto". PRIMARY match strategy for resolving
-    which size chart image applies to a given product.
-    """
-    parts = [age_group, gender, article_group, article_type, activity_group]
-    return "-".join(str(p).strip() if p is not None else "" for p in parts)
-
-
 def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
-                            style_number=None, style_col=None,
-                            composite_key=None, composite_key_col=None):
-    """
-    Resolves the Size Chart Image URL. Three strategies, tried in order:
-      1. COMPOSITE KEY exact match (PRIMARY): AgeGroup-Gender-ArticleGroup-
-         ArticleType-ActivityGroup against the Size Chart Sheet's key column.
-      2. STYLE NUMBER exact match (fallback).
-      3. TITLE keyword match (last-resort fallback).
-    """
+                            style_number=None, style_col=None):
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
-
-    if (composite_key_col and composite_key not in (None, "")
-            and composite_key_col in size_chart_image_df.columns
-            and url_col in size_chart_image_df.columns):
-        norm_key = str(composite_key).strip().lower()
-        key_match = size_chart_image_df[
-            size_chart_image_df[composite_key_col].astype(str).str.strip().str.lower() == norm_key
-        ]
-        if not key_match.empty:
-            val = key_match.iloc[0].get(url_col, "")
-            if val and str(val).strip():
-                return val
-
     if style_col and style_number not in (None, "") and style_col in size_chart_image_df.columns and url_col in size_chart_image_df.columns:
         norm_style = str(style_number).strip().lower()
         style_match = size_chart_image_df[
@@ -332,7 +299,6 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
             val = style_match.iloc[0].get(url_col, "")
             if val and str(val).strip():
                 return val
-
     if title_col not in size_chart_image_df.columns or url_col not in size_chart_image_df.columns:
         return ""
     title_norm = normalize_match_text(title)
@@ -515,7 +481,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         size_chart_image_df=None,
                         size_chart_image_title_col=None, size_chart_image_url_col=None,
                         size_chart_image_style_col=None,
-                        size_chart_image_composite_key_col=None,
                         region="PH", marketplace="Lazada"):
     mc = dict(MASTER_COLS)
     if master_col_map:
@@ -537,7 +502,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
         "image_url": size_chart_image_url_col if size_chart_image_url_col else SIZE_CHART_IMAGE_COLS["image_url"],
         "style_no": size_chart_image_style_col,
-        "composite_key": size_chart_image_composite_key_col,
     }
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
@@ -590,22 +554,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
         )
 
-        # --- Size Chart Image URL: matched PRIMARILY by AgeGroup-Gender-
-        # ArticleGroup-ArticleType-ActivityGroup composite key from the
-        # Master Input Sheet. Falls back to Style Number exact match, then
-        # normalized Title keyword match, if the composite key doesn't
-        # resolve anything. ---
-        size_chart_image_key = build_size_chart_image_key(
-            first.get(mc["age_group"], ""),
-            gender_val,
-            first.get(mc["article_group"], ""),
-            first.get(mc["article_type"], ""),
-            first.get(mc["activity_group"], ""),
-        )
+        # --- Size Chart Image URL: now matched strictly by the generated TITLE
+        # (normalized keyword-in-title match), per updated spec. Style Number
+        # exact match is still tried first when available, as a more reliable
+        # anchor before falling back to the title-based match. ---
         size_chart_image_url = match_size_chart_image(
             title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
             style_number=style_number, style_col=sci["style_no"],
-            composite_key=size_chart_image_key, composite_key_col=sci["composite_key"],
         )
 
         template_attr_2 = extract_description_main(raw_desc)
@@ -916,33 +871,17 @@ if size_chart_image_file is not None:
 
     st.markdown("#### 📌 Size Chart Sheet — Column Selection")
     st.caption(
-        "PRIMARY match: pick the composite key column below, matched against "
-        "AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup from your Master "
-        "Sheet (e.g. \"Adult-Men-Tops-Tee-Auto\"). Style Number and Title are "
-        "fallback matches, used only if the composite key doesn't resolve anything."
+        "The Title column here is matched (normalized keyword match) against each "
+        "product's generated Title — the longest matching row wins. Its Image URL "
+        "fills the 'Size Chart Image URL' output column."
     )
-
-    sci_none_option = "— not in my sheet / skip —"
-    sci_key_options = [sci_none_option] + sci_cols_available
-    default_sci_key_idx = (
-        sci_key_options.index(SIZE_CHART_IMAGE_COLS["composite_key"])
-        if SIZE_CHART_IMAGE_COLS["composite_key"] in sci_key_options else 0
-    )
-    _sci_key_choice = st.selectbox(
-        "Size Chart Key column (AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup)",
-        options=sci_key_options,
-        index=default_sci_key_idx,
-        key="size_chart_image_composite_key_col_select",
-    )
-    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
-
     sci1, sci2 = st.columns(2)
     with sci1:
         default_sci_title_idx = (
             sci_cols_available.index(size_chart_image_title_col) if size_chart_image_title_col in sci_cols_available else 0
         )
         size_chart_image_title_col = st.selectbox(
-            "Title column (fallback match against generated product Title)",
+            "Title column (matched against generated product Title)",
             options=sci_cols_available,
             index=default_sci_title_idx,
             key="size_chart_image_title_col_select",
@@ -960,8 +899,9 @@ if size_chart_image_file is not None:
 
     st.caption(
         "Optional: if your Size Chart Sheet also has a Style Number column, mapping "
-        "it here gives an exact match tried BEFORE the Title fallback."
+        "it here gives an exact match tried BEFORE the Title match above."
     )
+    sci_none_option = "— not in my sheet / skip —"
     sci_style_options = [sci_none_option] + sci_cols_available
     default_sci_style_idx = (
         sci_style_options.index(SIZE_CHART_IMAGE_COLS["style_no"])
@@ -976,7 +916,6 @@ if size_chart_image_file is not None:
     size_chart_image_style_col = None if _sci_style_choice == sci_none_option else _sci_style_choice
 else:
     size_chart_image_style_col = None
-    size_chart_image_composite_key_col = None
 
 category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
 category_id_col = CATEGORY_SHEET_COLS["category_id"]
@@ -1082,7 +1021,6 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_image_title_col=size_chart_image_title_col,
                     size_chart_image_url_col=size_chart_image_url_col,
                     size_chart_image_style_col=size_chart_image_style_col,
-                    size_chart_image_composite_key_col=size_chart_image_composite_key_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
