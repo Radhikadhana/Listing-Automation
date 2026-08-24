@@ -155,6 +155,25 @@ def guess_column_index(options, preferred_name, keywords):
     return 0
 
 
+def guess_column_or_none(options, preferred_name, keywords):
+    """
+    Like guess_column_index, but returns None (instead of falling back to
+    index 0 / the first column) when nothing actually matches. Use this for
+    OPTIONAL fields, where guessing a random unrelated column would be worse
+    than correctly leaving the field unmapped.
+    """
+    norm_options = [str(o).strip().lower() for o in options]
+    preferred_norm = str(preferred_name).strip().lower()
+    if preferred_norm in norm_options:
+        return options[norm_options.index(preferred_norm)]
+    for kw in keywords:
+        kw_norm = kw.strip().lower()
+        for i, opt in enumerate(norm_options):
+            if kw_norm in opt:
+                return options[i]
+    return None
+
+
 def normalize_match_text(s):
     if s is None:
         return ""
@@ -743,26 +762,62 @@ if master_file is not None:
         "Map every field to the matching column in your uploaded Master Sheet."
     )
 
+    # Split fields into two groups: REQUIRED fields (always shown, need your
+    # attention) vs OPTIONAL Short-Description-only fields (auto-detected by
+    # keyword matching -- same as the Image Sheet's column guessing -- and
+    # tucked into a collapsed section so they don't clutter the main view.
+    # The auto-guess still runs and populates master_col_map even if you
+    # never open that section, so the result is identical either way.
+    required_fields = [(k, label, req) for (k, label, req) in MASTER_COLS_FIELDS if req]
+    optional_fields = [(k, label, req) for (k, label, req) in MASTER_COLS_FIELDS if not req]
+
     with st.expander("Map Master Sheet columns", expanded=True):
         none_option = "— not in my sheet —"
         options_with_none = [none_option] + master_cols_available
 
         mcol1, mcol2 = st.columns(2)
-        for i, (field_key, field_label, required) in enumerate(MASTER_COLS_FIELDS):
+        for i, (field_key, field_label, required) in enumerate(required_fields):
             default_header = MASTER_COLS[field_key]
             default_idx = (
                 options_with_none.index(default_header) if default_header in options_with_none else 0
             )
             target_col = mcol1 if i % 2 == 0 else mcol2
             with target_col:
-                label = f"{field_label}" + (" *" if required else "")
                 chosen = st.selectbox(
-                    label,
+                    f"{field_label} *",
                     options=options_with_none,
                     index=default_idx,
                     key=f"master_col_map_{field_key}",
                 )
                 master_col_map[field_key] = "" if chosen == none_option else chosen
+
+        # Optional Short-Description fields are auto-detected by keyword
+        # matching (same approach as the Image Sheet's column guessing) and
+        # tucked into a collapsed section below so they don't clutter the
+        # main view -- the auto-guess becomes each selectbox's default value,
+        # and still applies even if you never open the section.
+        with st.expander("Optional: Short Description detail fields (auto-detected — click to override)", expanded=False):
+            ocol1, ocol2 = st.columns(2)
+            for i, (field_key, field_label, required) in enumerate(optional_fields):
+                default_header = MASTER_COLS[field_key]
+                base_keyword = field_label.split(" (")[0].strip().lower()
+                auto_guess = guess_column_or_none(
+                    master_cols_available, default_header, keywords=[base_keyword]
+                )
+                # No match found -> default to "not in my sheet" instead of
+                # silently guessing an unrelated column.
+                default_idx = (
+                    options_with_none.index(auto_guess) if auto_guess and auto_guess in options_with_none else 0
+                )
+                target_col = ocol1 if i % 2 == 0 else ocol2
+                with target_col:
+                    chosen = st.selectbox(
+                        field_label,
+                        options=options_with_none,
+                        index=default_idx,
+                        key=f"master_col_map_{field_key}",
+                    )
+                    master_col_map[field_key] = "" if chosen == none_option else chosen
 
         st.markdown("#### 📌 Price Column")
         default_price_idx = (
