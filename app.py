@@ -731,20 +731,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     parent_count = int((out_df["Row Type"] == "Parent").sum()) if "Row Type" in out_df.columns else 0
     child_count = int((out_df["Row Type"] == "Child").sum()) if "Row Type" in out_df.columns else 0
 
-    # Match Sample Upload Format columns to computed columns CASE-INSENSITIVELY
-    # and with surrounding whitespace ignored. A single-letter case mismatch
-    # (e.g. sample says "Size chart Image URL" but the code computed "Size
-    # Chart Image URL") would otherwise silently produce a blank column even
-    # though the data was computed correctly -- this prevents that class of
-    # bug for every column, not just one.
-    out_cols_by_norm = {str(c).strip().lower(): c for c in out_df.columns}
     for col in output_columns:
-        if col in out_df.columns:
-            continue
-        norm = str(col).strip().lower()
-        if norm in out_cols_by_norm:
-            out_df[col] = out_df[out_cols_by_norm[norm]]
-        else:
+        if col not in out_df.columns:
             out_df[col] = ""
     out_df = out_df[output_columns]
 
