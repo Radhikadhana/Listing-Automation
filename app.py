@@ -1030,6 +1030,12 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "Row Type": "Child",
                 **base_row,
                 "Description": "",
+                # Parent-only fields: these should appear only on the Parent
+                # row, never repeated on Child rows.
+                "Product Description 1": "",
+                "Short Description": "",
+                "Template Attribute 2": "",
+                "Template Attribute 3": "",
                 "SKU": sku,
                 "Seller SKU": sku,
                 "Parent SKU": parent_sku_value,
