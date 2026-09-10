@@ -1141,7 +1141,7 @@ if size_chart_template_file is not None:
             "Lookup key column (Gender_ArticleGroup, or the composite key if your sheet has one)",
             options=sct_cols_available,
             index=default_key_idx,
-            key="size_chart_key_col_select",
+            key="size_chart_key_col_select_v2",
         )
     with sc2:
         default_attr_guess = guess_column_or_none(
@@ -1167,39 +1167,32 @@ if size_chart_image_file is not None:
 
     st.markdown("#### 📌 Size Chart Sheet — Column Selection")
     st.caption(
-        "PRIMARY match: Gender_ArticleGroup key column (your actual sheet's format). "
-        "SECONDARY: the full composite key, if your sheet has one instead. Style "
-        "Number and Title are further fallbacks, used only if neither key above "
-        "resolves anything."
+        "Pick the single key column your sheet uses (Gender_ArticleGroup, or the "
+        "6-field composite key -- whichever your sheet has). Style Number and Title "
+        "are further fallbacks, used only if the key column doesn't resolve anything."
     )
 
     sci_none_option = "— not in my sheet / skip —"
-
-    sci_ga_options = [sci_none_option] + sci_cols_available
-    default_sci_ga_guess = guess_gender_article_group_column(sci_cols_available)
-    default_sci_ga_idx = (
-        sci_ga_options.index(default_sci_ga_guess) if default_sci_ga_guess in sci_ga_options else 0
-    )
-    _sci_ga_choice = st.selectbox(
-        "Gender_ArticleGroup key column — PRIMARY match",
-        options=sci_ga_options,
-        index=default_sci_ga_idx,
-        key="size_chart_image_gender_article_key_col_select",
-    )
-    size_chart_image_gender_article_key_col = None if _sci_ga_choice == sci_none_option else _sci_ga_choice
-
     sci_key_options = [sci_none_option] + sci_cols_available
-    default_sci_key_guess = guess_composite_key_column(sci_cols_available)
+    default_sci_key_guess = (
+        guess_gender_article_group_column(sci_cols_available)
+        or guess_composite_key_column(sci_cols_available)
+    )
     default_sci_key_idx = (
         sci_key_options.index(default_sci_key_guess) if default_sci_key_guess in sci_key_options else 0
     )
     _sci_key_choice = st.selectbox(
-        "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division) — secondary match, optional",
+        "Key column (Gender_ArticleGroup or composite key)",
         options=sci_key_options,
         index=default_sci_key_idx,
-        key="size_chart_image_composite_key_col_select",
+        key="size_chart_image_key_col_select_v2",
     )
-    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
+    _sci_key_value = None if _sci_key_choice == sci_none_option else _sci_key_choice
+    # Feed the single chosen column into BOTH match strategies -- whichever
+    # one it actually is (Gender_ArticleGroup format or composite format),
+    # the matcher tries it as both, and only one will ever find a hit.
+    size_chart_image_gender_article_key_col = _sci_key_value
+    size_chart_image_composite_key_col = _sci_key_value
 
     sci1, sci2 = st.columns(2)
     with sci1:
@@ -1278,7 +1271,7 @@ if category_file is not None:
         "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division)",
         options=cat_key_options,
         index=default_cat_key_idx,
-        key="category_composite_key_col_select",
+        key="category_composite_key_col_select_v2",
     )
     category_composite_key_col = None if _cat_key_choice == cat_none_option else _cat_key_choice
 
