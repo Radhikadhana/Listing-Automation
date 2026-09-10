@@ -748,21 +748,27 @@ def first_nonblank(*values):
 
 
 def build_short_description(brand, color_name, gender, activity_group, collection,
-                             material, material_local, upper_material, mid_sole_material,
-                             outer_sole_material, shell_material, toe_type, heel_type,
-                             fastener, fit, puma_technology, technology_purpose, style_number):
+                             material, toe_type, heel_type,
+                             fastener, fit, puma_technology, technology_purpose, style_number,
+                             is_footwear=False):
+    """
+    Material handling per spec:
+      - Footwear: Material is NEVER included in the Short Description.
+      - Apparel & Accessories: ONLY the plain "Material" value is included --
+        no sub-fields (Material Local, Upper/Mid Sole/Outer Sole/Shell
+        Material) are ever added; those "extra content" fields are dropped
+        entirely from the Short Description for every division.
+    """
     fields = [
         ("Brand", brand),
         ("Color Name", color_name),
         ("Gender", gender),
         ("Activity Group", activity_group),
         ("Collection", collection),
-        ("Material", material),
-        ("Material Local", material_local),
-        ("Upper Material", upper_material),
-        ("Mid Sole Material", mid_sole_material),
-        ("Outer Sole Material", outer_sole_material),
-        ("Shell Material", shell_material),
+    ]
+    if not is_footwear:
+        fields.append(("Material", material))
+    fields.extend([
         ("Toe Type", toe_type),
         ("Heel Type", heel_type),
         ("Fastener", fastener),
@@ -770,7 +776,7 @@ def build_short_description(brand, color_name, gender, activity_group, collectio
         ("PUMA Technology", puma_technology),
         ("Technology Purpose", technology_purpose),
         ("Style Number", style_number),
-    ]
+    ])
     items = []
     for label, raw_val in fields:
         val = _clean_field_value(raw_val)
@@ -938,11 +944,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             activity_group=first.get(mc["activity_group"], ""),
             collection=first.get(mc["collection"], ""),
             material=first.get(mc["material"], ""),
-            material_local=first.get(mc["material_local"], ""),
-            upper_material=first.get(mc["upper_material"], ""),
-            mid_sole_material=first.get(mc["mid_sole_material"], ""),
-            outer_sole_material=first.get(mc["outer_sole_material"], ""),
-            shell_material=first.get(mc["shell_material"], ""),
             toe_type=first.get(mc["toe_type"], ""),
             heel_type=first.get(mc["heel_type"], ""),
             fastener=first.get(mc["fastener"], ""),
@@ -950,6 +951,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             puma_technology=first.get(mc["puma_technology"], ""),
             technology_purpose=first.get(mc["technology_purpose"], ""),
             style_number=style_number,
+            is_footwear=footwear,
         )
 
         total_variation_count = len(group_df)
@@ -962,8 +964,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Short Description": short_description,
             "Currency Code": currency_code,
             "Quantity": 0,
-            "Category ID": category_id,
-            "Size Chart Image URL": size_chart_image_url,
             "Tax Class": "Default",
             "Brand": "PUMA",
             "Model": model_value,
@@ -973,7 +973,6 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Package Length(cm)": 12,
             "Package Width(cm)": 12,
             "What's in the Box": f"1 X {title}",
-            "Template Attribute 1": template_attr_1,
             "Template Attribute 2": template_attr_2,
             "Template Attribute 3": template_attr_3,
             "Region": region,
@@ -1017,6 +1016,11 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Image URL": parent_images,
             "Product Specification 1": f"sku.color_family={first_child_color_name}",
             "Product Specification 2": f"sku.size={first_child_formatted_size}",
+            # Parent-only mapping fields -- Category ID / Size Chart Image
+            # URL / Template Attribute 1 are set ONLY on the Parent row.
+            "Category ID": category_id,
+            "Size Chart Image URL": size_chart_image_url,
+            "Template Attribute 1": template_attr_1,
         }
         rows.append(parent_row)
 
