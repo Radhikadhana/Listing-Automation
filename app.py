@@ -415,11 +415,11 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
                             gender_article_key=None, gender_article_key_col=None):
     """
     Resolves the Size Chart Image URL. Strategies, tried in order:
-      1. FULL COMPOSITE KEY exact match (PRIMARY): Age Group+Gender+Article
-         Group+Article Type+Activity Group+Product Division -- the shared
-         key column used across all three mapping sheets.
-      2. GENDER + ARTICLE GROUP exact match (fallback), tried if (1) doesn't
-         resolve anything.
+      1. GENDER + ARTICLE GROUP exact match (PRIMARY): your actual sheet's
+         key column.
+      2. FULL COMPOSITE KEY exact match (fallback): Age Group+Gender+Article
+         Group+Article Type+Activity Group+Product Division, tried if (1)
+         doesn't resolve anything.
       3. STYLE NUMBER exact match (further fallback).
       4. TITLE keyword match (last-resort fallback).
     All comparisons are normalized (case-insensitive, whitespace-collapsed).
@@ -429,17 +429,6 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
 
-    if (composite_key_col and composite_key not in (None, "")
-            and composite_key_col in size_chart_image_df.columns
-            and url_col in size_chart_image_df.columns):
-        norm_key = normalize_match_text(composite_key)
-        sheet_keys_norm = size_chart_image_df[composite_key_col].astype(str).apply(normalize_match_text)
-        key_match = size_chart_image_df[sheet_keys_norm == norm_key]
-        if not key_match.empty:
-            val = key_match.iloc[0].get(url_col, "")
-            if val and str(val).strip():
-                return val
-
     if (gender_article_key_col and gender_article_key not in (None, "")
             and gender_article_key_col in size_chart_image_df.columns
             and url_col in size_chart_image_df.columns):
@@ -448,6 +437,17 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
         ga_match = size_chart_image_df[sheet_keys_norm == norm_key]
         if not ga_match.empty:
             val = ga_match.iloc[0].get(url_col, "")
+            if val and str(val).strip():
+                return val
+
+    if (composite_key_col and composite_key not in (None, "")
+            and composite_key_col in size_chart_image_df.columns
+            and url_col in size_chart_image_df.columns):
+        norm_key = normalize_match_text(composite_key)
+        sheet_keys_norm = size_chart_image_df[composite_key_col].astype(str).apply(normalize_match_text)
+        key_match = size_chart_image_df[sheet_keys_norm == norm_key]
+        if not key_match.empty:
+            val = key_match.iloc[0].get(url_col, "")
             if val and str(val).strip():
                 return val
 
@@ -766,15 +766,25 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         })
 
         # --- 3. Size Chart Template mapping (Template Attribute 1) ---
+        # Your actual sheet only has Gender_ArticleGroup (no 6-field composite
+        # key column), so that's tried FIRST here; the shared composite key
+        # is tried second in case a sheet with that column is used later.
+        gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
         template_attr_1 = match_size_chart_template(
-            shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+            gender_article_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
         )
+        if not template_attr_1:
+            template_attr_1 = match_size_chart_template(
+                shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+            )
         mapping_log["size_chart_template"].append({
-            "SKU/Model": model_value, "Key": shared_composite_key, "Matched": bool(template_attr_1),
+            "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(template_attr_1),
         })
 
         # --- 2. Size Chart Image URL mapping ---
-        gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
+        # Same reasoning: Gender_ArticleGroup is your actual sheet's key
+        # column, so it's tried FIRST (primary), with the shared composite
+        # key, Style Number, and Title kept as further fallbacks.
         size_chart_image_url = match_size_chart_image(
             title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
             style_number=style_number, style_col=sci["style_no"],
@@ -782,7 +792,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             gender_article_key=gender_article_key, gender_article_key_col=sci["gender_article_key"],
         )
         mapping_log["size_chart_image"].append({
-            "SKU/Model": model_value, "Key": shared_composite_key, "Matched": bool(size_chart_image_url),
+            "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(size_chart_image_url),
         })
 
         template_attr_2 = extract_description_main(raw_desc)
