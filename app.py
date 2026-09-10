@@ -231,6 +231,72 @@ def normalize_match_text(s):
     return s
 
 
+# Common typos/misspellings seen in real Gender/Article Group data (e.g. a
+# Size Chart Sheet row literally spelled "Feamle_Cap" instead of
+# "Female_Cap"). Corrected on a per-WORD basis after normalization so a
+# single typo'd cell doesn't silently fail to match forever.
+GENDER_TYPO_CORRECTIONS = {
+    "feamle": "female",
+    "femle": "female",
+    "femal": "female",
+    "mens": "male",
+    "womens": "female",
+    "boy": "boys",
+    "girl": "girls",
+}
+
+
+def correct_gender_typos(normalized_text):
+    """Applies known typo corrections to an already-normalized (lowercase,
+    whitespace-collapsed) string, word by word."""
+    words = normalized_text.split()
+    corrected = [GENDER_TYPO_CORRECTIONS.get(w, w) for w in words]
+    return " ".join(corrected)
+
+
+def expand_gender_article_candidates(raw_sheet_value):
+    """
+    Expands a Gender_ArticleGroup-style sheet value into every individual
+    (gender, article group) key it could represent, handling:
+      - Simple single values: "Male_Top" -> ["male_top"]
+      - Multi-gender cells joined by "/": "Male/Unisex_Footwear" or
+        "Male / Female / Unisex_Headwear" -> one candidate key PER gender
+        listed, each paired with the same article group.
+      - Typos in the gender portion (e.g. "Feamle") corrected via
+        GENDER_TYPO_CORRECTIONS.
+    Returns a list of normalized "gender_articlegroup" strings (using the
+    SAME separator/normalization as build_gender_article_group_key), so a
+    Master Sheet row with a single plain gender still matches a sheet row
+    that lists several genders together in one cell.
+    """
+    if raw_sheet_value is None:
+        return []
+    s = str(raw_sheet_value).strip()
+    if not s or s.lower() == "nan":
+        return []
+
+    # Split on the LAST underscore to separate the gender portion from the
+    # article group portion (article group itself may not contain "_").
+    if "_" in s:
+        gender_part, article_part = s.rsplit("_", 1)
+    else:
+        gender_part, article_part = s, ""
+
+    # Multiple genders in one cell are separated by "/" (with or without
+    # surrounding spaces): "Male/Unisex" or "Male / Female / Unisex".
+    gender_candidates = [g.strip() for g in gender_part.split("/") if g.strip()]
+    if not gender_candidates:
+        gender_candidates = [gender_part]
+
+    article_norm = correct_gender_typos(normalize_match_text(article_part))
+
+    results = []
+    for g in gender_candidates:
+        gender_norm = correct_gender_typos(normalize_match_text(g))
+        results.append(f"{gender_norm}_{article_norm}")
+    return results
+
+
 def clean_title(brand, gender, title, search_color_name_raw, is_footwear=None):
     """
     Build title per spec:
@@ -441,9 +507,13 @@ def build_gender_article_group_key(gender, article_group):
     """
     Gender+ArticleGroup lookup key, per spec point 2: "Use the Gender +
     Article Group mapping to identify the correct size chart." Normalized
-    the same way as the other keys.
+    the same way as the other keys, with common typo corrections applied
+    (e.g. "Feamle" -> "female") so a misspelling on either side doesn't
+    silently break the match.
     """
-    return "_".join(normalize_match_text(p) for p in [gender, article_group])
+    gender_norm = correct_gender_typos(normalize_match_text(gender))
+    article_norm = correct_gender_typos(normalize_match_text(article_group))
+    return f"{gender_norm}_{article_norm}"
 
 
 def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
@@ -469,13 +539,17 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
     if (gender_article_key_col and gender_article_key not in (None, "")
             and gender_article_key_col in size_chart_image_df.columns
             and url_col in size_chart_image_df.columns):
-        norm_key = normalize_match_text(gender_article_key)
-        sheet_keys_norm = size_chart_image_df[gender_article_key_col].astype(str).apply(normalize_match_text)
-        ga_match = size_chart_image_df[sheet_keys_norm == norm_key]
-        if not ga_match.empty:
-            val = ga_match.iloc[0].get(url_col, "")
-            if val and str(val).strip():
-                return val
+        # Row-wise match with multi-gender expansion + typo correction, so a
+        # sheet cell like "Male/Unisex_Footwear" or "Feamle_Cap" (typo) still
+        # matches a plain single-gender Master Sheet row. gender_article_key
+        # is already built via build_gender_article_group_key() (normalized +
+        # typo-corrected), so no further normalization needed on that side.
+        for _, row in size_chart_image_df.iterrows():
+            candidates = expand_gender_article_candidates(row.get(gender_article_key_col, ""))
+            if gender_article_key in candidates:
+                val = row.get(url_col, "")
+                if val and str(val).strip():
+                    return val
 
     if (composite_key_col and composite_key not in (None, "")
             and composite_key_col in size_chart_image_df.columns
@@ -536,23 +610,30 @@ def build_size_chart_key(gender, article_group):
 
 def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
     """
-    Matches the Gender_ArticleGroup key against the Size Chart Sheet
-    (normalized, case-insensitive, whitespace-collapsed) and returns the
-    Template value formatted as "sizechart=<value>". If the sheet's value
-    already includes the "sizechart=" prefix, it is NOT duplicated. Returns
-    "" (leaving the cell blank) if nothing matches -- never overwrites with
-    a guess.
+    Matches the Gender_ArticleGroup key against the Size Chart Template Sheet
+    with multi-gender expansion + typo correction (e.g. a sheet cell like
+    "Feamle_Cap" is corrected to "female_cap" before comparing, and a cell
+    like "Male/Unisex_Footwear" expands to match either "male_footwear" or
+    "unisex_footwear"). Returns the Template value formatted as
+    "sizechart=<value>" -- if the sheet's value already includes that
+    prefix, it is NOT duplicated. Returns "" (leaving the cell blank) if
+    nothing matches -- never overwrites with a guess.
     """
     if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
     if key_col not in size_chart_template_df.columns or attr_col not in size_chart_template_df.columns:
         return ""
-    norm_key = normalize_match_text(size_chart_key)
-    sheet_keys_norm = size_chart_template_df[key_col].astype(str).apply(normalize_match_text)
-    match = size_chart_template_df[sheet_keys_norm == norm_key]
-    if match.empty:
+
+    matched_row = None
+    for _, row in size_chart_template_df.iterrows():
+        candidates = expand_gender_article_candidates(row.get(key_col, ""))
+        if size_chart_key in candidates:
+            matched_row = row
+            break
+    if matched_row is None:
         return ""
-    raw_val = match.iloc[0].get(attr_col, "")
+
+    raw_val = matched_row.get(attr_col, "")
     val = _clean_field_value(raw_val) if raw_val is not None else ""
     if not val:
         return ""
