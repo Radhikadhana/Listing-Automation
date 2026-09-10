@@ -185,6 +185,43 @@ def guess_column_or_none(options, preferred_name, keywords):
     return None
 
 
+def guess_composite_key_column(options):
+    """
+    Strict guess for the 6-field composite key column (Age Group+Gender+
+    Article Group+Article Type+Activity Group+Product Division). Only
+    matches a column whose header ACTUALLY CONTAINS "+" joining at least
+    two of the expected field names -- a loose keyword guess (e.g. just
+    "group" or "category") was previously grabbing unrelated columns like
+    "Category ID". Returns None if no such column exists.
+    """
+    field_words = ["age group", "gender", "article group", "article type", "activity group", "product division"]
+    for opt in options:
+        norm = str(opt).strip().lower()
+        if "+" not in norm:
+            continue
+        hit_count = sum(1 for w in field_words if w.replace(" ", "") in norm.replace(" ", ""))
+        if hit_count >= 2:
+            return opt
+    return None
+
+
+def guess_gender_article_group_column(options):
+    """
+    Strict guess for a Gender_ArticleGroup-style key column (the format your
+    actual Size Chart / Size Chart Template sheets use). Matches a column
+    whose header contains both "gender" and "article" (any separator), but
+    rejects anything that also contains "+" (that's the 6-field composite
+    key, a different column) or looks like an ID/name column.
+    """
+    for opt in options:
+        norm = str(opt).strip().lower().replace(" ", "")
+        if "+" in norm:
+            continue
+        if "gender" in norm and "article" in norm:
+            return opt
+    return None
+
+
 def normalize_match_text(s):
     if s is None:
         return ""
@@ -1093,15 +1130,15 @@ if size_chart_template_file is not None:
     st.markdown("#### 📌 Size Chart Template Sheet — Column Selection")
     sc1, sc2 = st.columns(2)
     with sc1:
-        default_key_guess = guess_column_or_none(
-            sct_cols_available, size_chart_key_col,
-            keywords=["age group+gender", "age group", "gender+article", "gender_articlegroup", "gender", "key"]
-        ) or size_chart_key_col
+        default_key_guess = (
+            guess_gender_article_group_column(sct_cols_available)
+            or guess_composite_key_column(sct_cols_available)
+        )
         default_key_idx = (
             sct_cols_available.index(default_key_guess) if default_key_guess in sct_cols_available else 0
         )
         size_chart_key_col = st.selectbox(
-            "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division)",
+            "Lookup key column (Gender_ArticleGroup, or the composite key if your sheet has one)",
             options=sct_cols_available,
             index=default_key_idx,
             key="size_chart_key_col_select",
@@ -1130,42 +1167,39 @@ if size_chart_image_file is not None:
 
     st.markdown("#### 📌 Size Chart Sheet — Column Selection")
     st.caption(
-        "PRIMARY match (per spec): Gender + Article Group. SECONDARY: the full "
-        "AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup composite key. "
-        "Style Number and Title are further fallbacks, used only if neither "
-        "key above resolves anything."
+        "PRIMARY match: Gender_ArticleGroup key column (your actual sheet's format). "
+        "SECONDARY: the full composite key, if your sheet has one instead. Style "
+        "Number and Title are further fallbacks, used only if neither key above "
+        "resolves anything."
     )
 
     sci_none_option = "— not in my sheet / skip —"
 
-    sci_key_options = [sci_none_option] + sci_cols_available
-    default_sci_key_guess = guess_column_or_none(
-        sci_cols_available, SIZE_CHART_IMAGE_COLS["composite_key"],
-        keywords=["age group+gender", "age group", "gender+article", "gender_articlegroup"]
-    )
-    default_sci_key_idx = (
-        sci_key_options.index(default_sci_key_guess) if default_sci_key_guess in sci_key_options else 0
-    )
-    _sci_key_choice = st.selectbox(
-        "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division) — PRIMARY match",
-        options=sci_key_options,
-        index=default_sci_key_idx,
-        key="size_chart_image_composite_key_col_select",
-    )
-    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
-
     sci_ga_options = [sci_none_option] + sci_cols_available
+    default_sci_ga_guess = guess_gender_article_group_column(sci_cols_available)
     default_sci_ga_idx = (
-        sci_ga_options.index(SIZE_CHART_IMAGE_COLS["gender_article_key"])
-        if SIZE_CHART_IMAGE_COLS["gender_article_key"] in sci_ga_options else 0
+        sci_ga_options.index(default_sci_ga_guess) if default_sci_ga_guess in sci_ga_options else 0
     )
     _sci_ga_choice = st.selectbox(
-        "Gender_ArticleGroup key column (fallback match, optional)",
+        "Gender_ArticleGroup key column — PRIMARY match",
         options=sci_ga_options,
         index=default_sci_ga_idx,
         key="size_chart_image_gender_article_key_col_select",
     )
     size_chart_image_gender_article_key_col = None if _sci_ga_choice == sci_none_option else _sci_ga_choice
+
+    sci_key_options = [sci_none_option] + sci_cols_available
+    default_sci_key_guess = guess_composite_key_column(sci_cols_available)
+    default_sci_key_idx = (
+        sci_key_options.index(default_sci_key_guess) if default_sci_key_guess in sci_key_options else 0
+    )
+    _sci_key_choice = st.selectbox(
+        "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division) — secondary match, optional",
+        options=sci_key_options,
+        index=default_sci_key_idx,
+        key="size_chart_image_composite_key_col_select",
+    )
+    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
 
     sci1, sci2 = st.columns(2)
     with sci1:
@@ -1236,10 +1270,7 @@ if category_file is not None:
     )
     cat_none_option = "— not in my sheet / skip —"
     cat_key_options = [cat_none_option] + cat_cols_available
-    default_cat_key_guess = guess_column_or_none(
-        cat_cols_available, CATEGORY_SHEET_COLS["composite_key"],
-        keywords=["age group+gender", "age group", "gender+article"]
-    )
+    default_cat_key_guess = guess_composite_key_column(cat_cols_available)
     default_cat_key_idx = (
         cat_key_options.index(default_cat_key_guess) if default_cat_key_guess in cat_key_options else 0
     )
