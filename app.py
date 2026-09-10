@@ -610,14 +610,18 @@ def build_size_chart_key(gender, article_group):
 
 def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
     """
-    Matches the Gender_ArticleGroup key against the Size Chart Template Sheet
-    with multi-gender expansion + typo correction (e.g. a sheet cell like
-    "Feamle_Cap" is corrected to "female_cap" before comparing, and a cell
-    like "Male/Unisex_Footwear" expands to match either "male_footwear" or
-    "unisex_footwear"). Returns the Template value formatted as
-    "sizechart=<value>" -- if the sheet's value already includes that
-    prefix, it is NOT duplicated. Returns "" (leaving the cell blank) if
-    nothing matches -- never overwrites with a guess.
+    Matches the selected key column against the Size Chart Template Sheet.
+    Two strategies, tried in order:
+      1. Gender_ArticleGroup-style expansion match (handles multi-gender
+         cells like "Male/Unisex_Footwear" and typos like "Feamle_Cap").
+      2. Plain normalized equality match -- handles a composite key column
+         like "Age Group+Gender+Article Group+Article Type+Activity
+         Group+Product Division" (no underscore-based gender parsing needed
+         here, just an exact normalized string match).
+    Returns the Template value formatted as "sizechart=<value>" -- if the
+    sheet's value already includes that prefix, it is NOT duplicated.
+    Returns "" (leaving the cell blank) if nothing matches -- never
+    overwrites with a guess.
     """
     if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
@@ -625,11 +629,22 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
         return ""
 
     matched_row = None
+
+    # Strategy 1: Gender_ArticleGroup-style expansion.
     for _, row in size_chart_template_df.iterrows():
         candidates = expand_gender_article_candidates(row.get(key_col, ""))
         if size_chart_key in candidates:
             matched_row = row
             break
+
+    # Strategy 2: plain normalized equality (composite key format).
+    if matched_row is None:
+        norm_key = normalize_match_text(size_chart_key)
+        sheet_keys_norm = size_chart_template_df[key_col].astype(str).apply(normalize_match_text)
+        eq_match = size_chart_template_df[sheet_keys_norm == norm_key]
+        if not eq_match.empty:
+            matched_row = eq_match.iloc[0]
+
     if matched_row is None:
         return ""
 
@@ -1213,8 +1228,8 @@ if size_chart_template_file is not None:
     sc1, sc2 = st.columns(2)
     with sc1:
         default_key_guess = (
-            guess_gender_article_group_column(sct_cols_available)
-            or guess_composite_key_column(sct_cols_available)
+            guess_composite_key_column(sct_cols_available)
+            or guess_gender_article_group_column(sct_cols_available)
         )
         default_key_idx = (
             sct_cols_available.index(default_key_guess) if default_key_guess in sct_cols_available else 0
@@ -1223,7 +1238,7 @@ if size_chart_template_file is not None:
             "Size chart Name",
             options=sct_cols_available,
             index=default_key_idx,
-            key="size_chart_key_col_select_v4",
+            key="size_chart_key_col_select_v5",
         )
     with sc2:
         default_attr_guess = guess_column_or_none(
@@ -1236,7 +1251,7 @@ if size_chart_template_file is not None:
             "Size chart Template",
             options=sct_cols_available,
             index=default_attr_idx,
-            key="size_chart_attr_col_select_v2",
+            key="size_chart_attr_col_select_v3",
         )
 
 size_chart_image_title_col = SIZE_CHART_IMAGE_COLS["title_keyword"]
@@ -1253,8 +1268,8 @@ if size_chart_image_file is not None:
     sci1, sci2 = st.columns(2)
     with sci1:
         default_sci_key_guess = (
-            guess_gender_article_group_column(sci_cols_available)
-            or guess_composite_key_column(sci_cols_available)
+            guess_composite_key_column(sci_cols_available)
+            or guess_gender_article_group_column(sci_cols_available)
         )
         default_sci_key_idx = (
             sci_cols_available.index(default_sci_key_guess) if default_sci_key_guess in sci_cols_available else 0
