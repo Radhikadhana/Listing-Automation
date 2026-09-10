@@ -1137,11 +1137,15 @@ if size_chart_template_file is not None:
         default_key_idx = (
             sct_cols_available.index(default_key_guess) if default_key_guess in sct_cols_available else 0
         )
+        key_label = (
+            f"Key column (detected in this sheet: \"{default_key_guess}\")"
+            if default_key_guess else "Key column (none detected — please select)"
+        )
         size_chart_key_col = st.selectbox(
-            "Lookup key column (Gender_ArticleGroup, or the composite key if your sheet has one)",
+            key_label,
             options=sct_cols_available,
             index=default_key_idx,
-            key="size_chart_key_col_select_v2",
+            key="size_chart_key_col_select_v3",
         )
     with sc2:
         default_attr_guess = guess_column_or_none(
@@ -1181,11 +1185,15 @@ if size_chart_image_file is not None:
     default_sci_key_idx = (
         sci_key_options.index(default_sci_key_guess) if default_sci_key_guess in sci_key_options else 0
     )
+    sci_key_label = (
+        f"Key column (detected in this sheet: \"{default_sci_key_guess}\")"
+        if default_sci_key_guess else "Key column (none detected — please select)"
+    )
     _sci_key_choice = st.selectbox(
-        "Key column (Gender_ArticleGroup or composite key)",
+        sci_key_label,
         options=sci_key_options,
         index=default_sci_key_idx,
-        key="size_chart_image_key_col_select_v2",
+        key="size_chart_image_key_col_select_v3",
     )
     _sci_key_value = None if _sci_key_choice == sci_none_option else _sci_key_choice
     # Feed the single chosen column into BOTH match strategies -- whichever
@@ -1267,11 +1275,15 @@ if category_file is not None:
     default_cat_key_idx = (
         cat_key_options.index(default_cat_key_guess) if default_cat_key_guess in cat_key_options else 0
     )
+    cat_key_label = (
+        f"Composite key column (detected in this sheet: \"{default_cat_key_guess}\")"
+        if default_cat_key_guess else "Composite key column (none detected in this sheet)"
+    )
     _cat_key_choice = st.selectbox(
-        "Composite key column (Age Group+Gender+Article Group+Article Type+Activity Group+Product Division)",
+        cat_key_label,
         options=cat_key_options,
         index=default_cat_key_idx,
-        key="category_composite_key_col_select_v2",
+        key="category_composite_key_col_select_v3",
     )
     category_composite_key_col = None if _cat_key_choice == cat_none_option else _cat_key_choice
 
