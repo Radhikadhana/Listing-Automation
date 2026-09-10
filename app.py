@@ -102,9 +102,9 @@ COMPOSITE_KEY_COLUMN_NAME = "Age Group+Gender+Article Group+Article Type+Activit
 
 SIZE_CHART_IMAGE_COLS = {
     "composite_key": COMPOSITE_KEY_COLUMN_NAME,  # PRIMARY match: shared composite key
-    "gender_article_key": "Gender_ArticleGroup",  # fallback only
+    "gender_article_key": "Gender_ArticleGroup",  # your actual Size Chart Sheet header
     "title_keyword": "Title",                     # fallback only
-    "image_url": "size chart link",  # matches your actual Size Chart Sheet header -> output "Size chart Image URL"
+    "image_url": "Size chart link",  # matches your actual Size Chart Sheet header -> output "Size chart Image URL"
     "style_no": "Style Number",       # fallback only
 }
 
@@ -1268,7 +1268,8 @@ if size_chart_image_file is not None:
     sci1, sci2 = st.columns(2)
     with sci1:
         default_sci_key_guess = (
-            guess_composite_key_column(sci_cols_available)
+            guess_column_or_none(sci_cols_available, "Gender_ArticleGroup", keywords=["gender_articlegroup"])
+            or guess_composite_key_column(sci_cols_available)
             or guess_gender_article_group_column(sci_cols_available)
         )
         default_sci_key_idx = (
@@ -1278,12 +1279,14 @@ if size_chart_image_file is not None:
             "Size Chart Template Name",
             options=sci_cols_available,
             index=default_sci_key_idx,
-            key="size_chart_image_key_col_select_v4",
+            key="size_chart_image_key_col_select_v5",
         )
     with sci2:
-        default_sci_url_guess = guess_column_or_none(
-            sci_cols_available, size_chart_image_url_col, keywords=["size chart link", "link", "url", "image"]
-        ) or size_chart_image_url_col
+        default_sci_url_guess = (
+            guess_column_or_none(sci_cols_available, "Size chart link", keywords=["size chart link"])
+            or guess_column_or_none(sci_cols_available, size_chart_image_url_col, keywords=["link", "url", "image"])
+            or size_chart_image_url_col
+        )
         default_sci_url_idx = (
             sci_cols_available.index(default_sci_url_guess) if default_sci_url_guess in sci_cols_available else 0
         )
@@ -1291,7 +1294,7 @@ if size_chart_image_file is not None:
             "Size chart link",
             options=sci_cols_available,
             index=default_sci_url_idx,
-            key="size_chart_image_url_col_select_v2",
+            key="size_chart_image_url_col_select_v3",
         )
 
     # Feed the single chosen key column into BOTH match strategies -- whichever
