@@ -95,18 +95,22 @@ IMAGE_SHEET_COLS = {
 }
 
 SIZE_CHART_IMAGE_COLS = {
+    "gender_article_key": "Gender_ArticleGroup",  # PRIMARY match per spec, e.g. "Men_Tops"
+    "composite_key": "Size Chart Key",  # AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup
     "title_keyword": "Title",
-    "image_url": "Size Chart Image URL",
+    "image_url": "size chart Link",  # matches your actual Size Chart Sheet header
     "style_no": "Style Number",
 }
 
 SIZE_CHART_TEMPLATE_COLS = {
-    "key": "Size Chart Key",
-    "template_attribute_1": "Template Attribute 1",
+    "key": "Gender_ArticleGroup",  # matches your actual Size Chart Template Sheet header
+    "template_attribute_1": "Size chart Template",  # matches your actual Size Chart Template Sheet header
 }
 
 CATEGORY_SHEET_COLS = {
-    "keyword": "Title Keyword",
+    "composite_key": "Category Key",  # AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup-ProductDivision
+    "category_name": "Category Name",  # your actual sheet's breadcrumb-style name column, e.g. "Kids' Fashion:Baby Clothing:..."
+    "keyword": "Title Keyword",       # fallback only (exact keyword sheet, if you have one)
     "category_id": "Category ID",
 }
 
@@ -270,9 +274,94 @@ def size_sort_key(size_val, is_footwear_row=False):
         return (2, 0, 0, s)
 
 
-def match_category_id(title, category_df, keyword_col, id_col):
+def match_category_id_by_attributes(attribute_values, category_df, name_col, id_col):
+    """
+    Best-possible-match strategy for a Category Sheet that only has a
+    breadcrumb-style Category Name column (e.g. "Kids' Fashion:Baby
+    Clothing:Beachwear & Accessories") and NO dedicated composite key
+    column -- your actual sheet's structure.
+
+    Scores every Category Name row by how many of the given attribute
+    values (Age Group, Gender, Article Group, Article Type, Activity Group,
+    Product Division) appear as a normalized substring within that row's
+    Category Name, and returns the ID of the row with the highest score.
+    This is the "combination of all available attributes" match required
+    by spec point 1, adapted to a sheet with no explicit key column.
+
+    Returns "" if nothing scores above zero -- never guesses blindly.
+    """
     if category_df is None or category_df.empty:
         return ""
+    if name_col not in category_df.columns or id_col not in category_df.columns:
+        return ""
+
+    clean_attrs = [normalize_match_text(a) for a in attribute_values if _clean_field_value(a)]
+    clean_attrs = [a for a in clean_attrs if a]
+    if not clean_attrs:
+        return ""
+
+    best_id = ""
+    best_score = 0
+    best_specificity = 0  # tie-break: prefer the longer/more specific name text matched
+    for _, row in category_df.iterrows():
+        name_norm = normalize_match_text(row.get(name_col, ""))
+        if not name_norm:
+            continue
+        score = sum(1 for a in clean_attrs if a in name_norm)
+        if score > best_score or (score == best_score and score > 0 and len(name_norm) > best_specificity):
+            best_score = score
+            best_specificity = len(name_norm)
+            best_id = row.get(id_col, "")
+
+    return best_id if best_score > 0 else ""
+
+
+def build_category_key(age_group, gender, article_group, article_type, activity_group, product_division):
+    """
+    Composite lookup key for Category ID matching:
+      AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup-ProductDivision
+    Cleaned/normalized (case-insensitive, whitespace-collapsed) before
+    comparison so minor formatting differences don't break the match.
+    """
+    parts = [age_group, gender, article_group, article_type, activity_group, product_division]
+    return "-".join(normalize_match_text(p) for p in parts)
+
+
+def match_category_id(title, category_df, keyword_col, id_col,
+                       composite_key=None, composite_key_col=None,
+                       attribute_values=None, name_col=None):
+    """
+    Resolves Category ID. Strategies, tried in order:
+      1. COMPOSITE KEY exact match (if your Category Sheet has a dedicated
+         key column -- AgeGroup-Gender-ArticleGroup-ArticleType-
+         ActivityGroup-ProductDivision, normalized before comparing).
+      2. ATTRIBUTE-SUBSTRING scoring against a Category Name column (your
+         actual sheet's structure -- breadcrumb-style names, no key column).
+         Uses the combination of all available attributes to find the best
+         match, per spec.
+      3. TITLE keyword match (last-resort fallback).
+    Returns "" (leaving the cell blank) if nothing matches -- existing
+    values are never overwritten with a bad guess.
+    """
+    if category_df is None or category_df.empty:
+        return ""
+
+    if (composite_key_col and composite_key not in (None, "")
+            and composite_key_col in category_df.columns
+            and id_col in category_df.columns):
+        norm_key = str(composite_key).strip().lower()
+        sheet_keys_norm = category_df[composite_key_col].astype(str).apply(normalize_match_text)
+        key_match = category_df[sheet_keys_norm == norm_key]
+        if not key_match.empty:
+            val = key_match.iloc[0].get(id_col, "")
+            if val and str(val).strip():
+                return val
+
+    if attribute_values and name_col:
+        attr_result = match_category_id_by_attributes(attribute_values, category_df, name_col, id_col)
+        if attr_result:
+            return attr_result
+
     if keyword_col not in category_df.columns or id_col not in category_df.columns:
         return ""
     title_lower = str(title).lower()
@@ -286,10 +375,66 @@ def match_category_id(title, category_df, keyword_col, id_col):
     return best_match
 
 
+def build_size_chart_image_key(age_group, gender, article_group, article_type, activity_group):
+    """
+    Full composite lookup key for the Size Chart Image URL, built from:
+      AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup
+    Normalized (case-insensitive, whitespace-collapsed) before comparison.
+    """
+    parts = [age_group, gender, article_group, article_type, activity_group]
+    return "-".join(normalize_match_text(p) for p in parts)
+
+
+def build_gender_article_group_key(gender, article_group):
+    """
+    Gender+ArticleGroup lookup key, per spec point 2: "Use the Gender +
+    Article Group mapping to identify the correct size chart." Normalized
+    the same way as the other keys.
+    """
+    return "_".join(normalize_match_text(p) for p in [gender, article_group])
+
+
 def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
-                            style_number=None, style_col=None):
+                            style_number=None, style_col=None,
+                            composite_key=None, composite_key_col=None,
+                            gender_article_key=None, gender_article_key_col=None):
+    """
+    Resolves the Size Chart Image URL. Strategies, tried in order:
+      1. GENDER + ARTICLE GROUP exact match (PRIMARY per spec): the
+         explicitly required matching logic for this mapping.
+      2. FULL COMPOSITE KEY exact match: AgeGroup-Gender-ArticleGroup-
+         ArticleType-ActivityGroup, tried if (1) doesn't resolve anything.
+      3. STYLE NUMBER exact match (fallback).
+      4. TITLE keyword match (last-resort fallback).
+    All comparisons are normalized (case-insensitive, whitespace-collapsed).
+    Returns "" (leaving the cell blank) if nothing matches at all --
+    existing values are never overwritten with a bad guess.
+    """
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
+
+    if (gender_article_key_col and gender_article_key not in (None, "")
+            and gender_article_key_col in size_chart_image_df.columns
+            and url_col in size_chart_image_df.columns):
+        norm_key = normalize_match_text(gender_article_key)
+        sheet_keys_norm = size_chart_image_df[gender_article_key_col].astype(str).apply(normalize_match_text)
+        ga_match = size_chart_image_df[sheet_keys_norm == norm_key]
+        if not ga_match.empty:
+            val = ga_match.iloc[0].get(url_col, "")
+            if val and str(val).strip():
+                return val
+
+    if (composite_key_col and composite_key not in (None, "")
+            and composite_key_col in size_chart_image_df.columns
+            and url_col in size_chart_image_df.columns):
+        norm_key = normalize_match_text(composite_key)
+        sheet_keys_norm = size_chart_image_df[composite_key_col].astype(str).apply(normalize_match_text)
+        key_match = size_chart_image_df[sheet_keys_norm == norm_key]
+        if not key_match.empty:
+            val = key_match.iloc[0].get(url_col, "")
+            if val and str(val).strip():
+                return val
+
     if style_col and style_number not in (None, "") and style_col in size_chart_image_df.columns and url_col in size_chart_image_df.columns:
         norm_style = str(style_number).strip().lower()
         style_match = size_chart_image_df[
@@ -299,6 +444,7 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
             val = style_match.iloc[0].get(url_col, "")
             if val and str(val).strip():
                 return val
+
     if title_col not in size_chart_image_df.columns or url_col not in size_chart_image_df.columns:
         return ""
     title_norm = normalize_match_text(title)
@@ -327,23 +473,39 @@ def format_size_value(uk_size, is_footwear_row):
 
 
 def build_size_chart_key(gender, article_group):
+    """
+    Size Chart TEMPLATE lookup key: Gender_ArticleGroup, per spec (point 3),
+    normalized (case-insensitive, whitespace-collapsed) before comparison.
+    """
     parts = [gender, article_group]
-    return "-".join(str(p).strip() if p is not None else "" for p in parts)
+    return "_".join(normalize_match_text(p) for p in parts)
 
 
 def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
+    """
+    Matches the Gender_ArticleGroup key against the Size Chart Sheet
+    (normalized, case-insensitive, whitespace-collapsed) and returns the
+    Template value formatted as "sizechart=<value>". If the sheet's value
+    already includes the "sizechart=" prefix, it is NOT duplicated. Returns
+    "" (leaving the cell blank) if nothing matches -- never overwrites with
+    a guess.
+    """
     if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
     if key_col not in size_chart_template_df.columns or attr_col not in size_chart_template_df.columns:
         return ""
-    match = size_chart_template_df[
-        size_chart_template_df[key_col].astype(str).str.strip() == str(size_chart_key).strip()
-    ]
+    norm_key = normalize_match_text(size_chart_key)
+    sheet_keys_norm = size_chart_template_df[key_col].astype(str).apply(normalize_match_text)
+    match = size_chart_template_df[sheet_keys_norm == norm_key]
     if match.empty:
         return ""
     raw_val = match.iloc[0].get(attr_col, "")
     val = _clean_field_value(raw_val) if raw_val is not None else ""
-    return f"sizechart={val}" if val else ""
+    if not val:
+        return ""
+    if val.strip().lower().startswith("sizechart="):
+        return val.strip()
+    return f"sizechart={val}"
 
 
 def match_size_chart_by_title(title, size_chart_image_df, title_col, url_col):
@@ -478,9 +640,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         image_sku_col=None, image_url_col=None,
                         size_chart_key_col=None, size_chart_attr_col=None,
                         category_keyword_col=None, category_id_col=None,
+                        category_composite_key_col=None,
+                        category_name_col=None,
                         size_chart_image_df=None,
                         size_chart_image_title_col=None, size_chart_image_url_col=None,
                         size_chart_image_style_col=None,
+                        size_chart_image_composite_key_col=None,
+                        size_chart_image_gender_article_key_col=None,
                         region="PH", marketplace="Lazada"):
     mc = dict(MASTER_COLS)
     if master_col_map:
@@ -497,12 +663,21 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     cc = {
         "keyword": category_keyword_col if category_keyword_col else CATEGORY_SHEET_COLS["keyword"],
         "category_id": category_id_col if category_id_col else CATEGORY_SHEET_COLS["category_id"],
+        "composite_key": category_composite_key_col,
+        "category_name": category_name_col if category_name_col else CATEGORY_SHEET_COLS["category_name"],
     }
     sci = {
         "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
         "image_url": size_chart_image_url_col if size_chart_image_url_col else SIZE_CHART_IMAGE_COLS["image_url"],
         "style_no": size_chart_image_style_col,
+        "composite_key": size_chart_image_composite_key_col,
+        "gender_article_key": size_chart_image_gender_article_key_col,
     }
+
+    # Mapping log/report data (per General Requirements): tracks per-row
+    # outcomes for Category ID and Size Chart Image URL mapping so a clear
+    # report can be shown after generation.
+    mapping_log = {"category": [], "size_chart_image": [], "size_chart_template": []}
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
 
@@ -547,21 +722,61 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         color_no_str = str(color_no_val).strip() if color_no_val not in (None, "") and str(color_no_val).strip().lower() != "nan" else ""
         model_value = color_no_str if color_no_str else str(style_number)
 
-        category_id = match_category_id(title, category_df, cc["keyword"], cc["category_id"])
+        # --- 1. Category ID mapping: AgeGroup-Gender-ArticleGroup-ArticleType-
+        # ActivityGroup-ProductDivision composite key (primary, if your sheet
+        # has a dedicated key column), attribute-substring scoring against a
+        # Category Name column (secondary -- your actual sheet's structure),
+        # Title keyword match (last-resort fallback). Never overwrites with a
+        # bad guess -- blank if unmatched. ---
+        category_attrs = [
+            first.get(mc["age_group"], ""),
+            gender_val,
+            first.get(mc["article_group"], ""),
+            first.get(mc["article_type"], ""),
+            first.get(mc["activity_group"], ""),
+            ptype,
+        ]
+        category_key = build_category_key(*category_attrs)
+        category_id = match_category_id(
+            title, category_df, cc["keyword"], cc["category_id"],
+            composite_key=category_key, composite_key_col=cc["composite_key"],
+            attribute_values=category_attrs, name_col=cc["category_name"],
+        )
+        mapping_log["category"].append({
+            "SKU/Model": model_value, "Key": category_key, "Matched": bool(category_id),
+        })
 
+        # --- 3. Size Chart Template mapping: Gender_ArticleGroup key,
+        # normalized. Never overwrites with a bad guess -- blank if unmatched. ---
         size_chart_key = build_size_chart_key(gender_val, first.get(mc["article_group"], ""))
         template_attr_1 = match_size_chart_template(
             size_chart_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
         )
+        mapping_log["size_chart_template"].append({
+            "SKU/Model": model_value, "Key": size_chart_key, "Matched": bool(template_attr_1),
+        })
 
-        # --- Size Chart Image URL: now matched strictly by the generated TITLE
-        # (normalized keyword-in-title match), per updated spec. Style Number
-        # exact match is still tried first when available, as a more reliable
-        # anchor before falling back to the title-based match. ---
+        # --- 2. Size Chart Image URL mapping: Gender+ArticleGroup match
+        # (primary, per spec), full AgeGroup-Gender-ArticleGroup-ArticleType-
+        # ActivityGroup composite key (secondary), Style Number and Title
+        # kept as further fallbacks. Never overwrites with a bad guess. ---
+        gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
+        size_chart_image_key = build_size_chart_image_key(
+            first.get(mc["age_group"], ""),
+            gender_val,
+            first.get(mc["article_group"], ""),
+            first.get(mc["article_type"], ""),
+            first.get(mc["activity_group"], ""),
+        )
         size_chart_image_url = match_size_chart_image(
             title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
             style_number=style_number, style_col=sci["style_no"],
+            composite_key=size_chart_image_key, composite_key_col=sci["composite_key"],
+            gender_article_key=gender_article_key, gender_article_key_col=sci["gender_article_key"],
         )
+        mapping_log["size_chart_image"].append({
+            "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(size_chart_image_url),
+        })
 
         template_attr_2 = extract_description_main(raw_desc)
         template_attr_3 = extract_productstory(raw_desc)
@@ -686,12 +901,24 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     parent_count = int((out_df["Row Type"] == "Parent").sum()) if "Row Type" in out_df.columns else 0
     child_count = int((out_df["Row Type"] == "Child").sum()) if "Row Type" in out_df.columns else 0
 
+    # Match Sample Upload Format columns to computed columns CASE-INSENSITIVELY
+    # and with surrounding whitespace ignored. A single-letter case mismatch
+    # (e.g. sample says "Size chart Image URL" but the code computed "Size
+    # Chart Image URL") would otherwise silently produce a blank column even
+    # though the data was computed correctly -- this prevents that class of
+    # bug for every column, not just one.
+    out_cols_by_norm = {str(c).strip().lower(): c for c in out_df.columns}
     for col in output_columns:
-        if col not in out_df.columns:
+        if col in out_df.columns:
+            continue
+        norm = str(col).strip().lower()
+        if norm in out_cols_by_norm:
+            out_df[col] = out_df[out_cols_by_norm[norm]]
+        else:
             out_df[col] = ""
     out_df = out_df[output_columns]
 
-    return out_df, parent_count, child_count
+    return out_df, parent_count, child_count, mapping_log
 
 
 # ======================================================================================
@@ -756,6 +983,14 @@ if master_file is not None:
     _master_preview_df = load_any(master_file)
     master_file.seek(0)
     master_cols_available = list(_master_preview_df.columns)
+
+    if not master_cols_available:
+        st.error(
+            "⚠️ The uploaded Master Input Sheet has NO columns/headers -- it appears "
+            "to be empty. The Master Sheet mapping section can't populate any dropdowns "
+            "until you upload a file that actually has a header row and data. Please "
+            "check the file and re-upload."
+        )
 
     st.markdown("#### 📌 Master Sheet — Column Mapping")
     st.caption(
@@ -841,18 +1076,24 @@ if size_chart_template_file is not None:
     st.markdown("#### 📌 Size Chart Template Sheet — Column Selection")
     sc1, sc2 = st.columns(2)
     with sc1:
+        default_key_guess = guess_column_or_none(
+            sct_cols_available, size_chart_key_col, keywords=["gender_articlegroup", "gender", "key"]
+        ) or size_chart_key_col
         default_key_idx = (
-            sct_cols_available.index(size_chart_key_col) if size_chart_key_col in sct_cols_available else 0
+            sct_cols_available.index(default_key_guess) if default_key_guess in sct_cols_available else 0
         )
         size_chart_key_col = st.selectbox(
-            "Lookup key column (Gender-Article Group)",
+            "Lookup key column (Gender_ArticleGroup)",
             options=sct_cols_available,
             index=default_key_idx,
             key="size_chart_key_col_select",
         )
     with sc2:
+        default_attr_guess = guess_column_or_none(
+            sct_cols_available, size_chart_attr_col, keywords=["size chart template", "sizechart", "template"]
+        ) or size_chart_attr_col
         default_attr_idx = (
-            sct_cols_available.index(size_chart_attr_col) if size_chart_attr_col in sct_cols_available else 0
+            sct_cols_available.index(default_attr_guess) if default_attr_guess in sct_cols_available else 0
         )
         size_chart_attr_col = st.selectbox(
             "Template Attribute 1 value column",
@@ -871,27 +1112,63 @@ if size_chart_image_file is not None:
 
     st.markdown("#### 📌 Size Chart Sheet — Column Selection")
     st.caption(
-        "The Title column here is matched (normalized keyword match) against each "
-        "product's generated Title — the longest matching row wins. Its Image URL "
-        "fills the 'Size Chart Image URL' output column."
+        "PRIMARY match (per spec): Gender + Article Group. SECONDARY: the full "
+        "AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup composite key. "
+        "Style Number and Title are further fallbacks, used only if neither "
+        "key above resolves anything."
     )
+
+    sci_none_option = "— not in my sheet / skip —"
+
+    sci_ga_options = [sci_none_option] + sci_cols_available
+    default_sci_ga_idx = (
+        sci_ga_options.index(SIZE_CHART_IMAGE_COLS["gender_article_key"])
+        if SIZE_CHART_IMAGE_COLS["gender_article_key"] in sci_ga_options else 0
+    )
+    _sci_ga_choice = st.selectbox(
+        "Gender_ArticleGroup key column (PRIMARY match)",
+        options=sci_ga_options,
+        index=default_sci_ga_idx,
+        key="size_chart_image_gender_article_key_col_select",
+    )
+    size_chart_image_gender_article_key_col = None if _sci_ga_choice == sci_none_option else _sci_ga_choice
+
+    sci_key_options = [sci_none_option] + sci_cols_available
+    default_sci_key_idx = (
+        sci_key_options.index(SIZE_CHART_IMAGE_COLS["composite_key"])
+        if SIZE_CHART_IMAGE_COLS["composite_key"] in sci_key_options else 0
+    )
+    _sci_key_choice = st.selectbox(
+        "Size Chart Key column (AgeGroup-Gender-ArticleGroup-ArticleType-ActivityGroup, secondary match)",
+        options=sci_key_options,
+        index=default_sci_key_idx,
+        key="size_chart_image_composite_key_col_select",
+    )
+    size_chart_image_composite_key_col = None if _sci_key_choice == sci_none_option else _sci_key_choice
+
     sci1, sci2 = st.columns(2)
     with sci1:
+        default_sci_title_guess = guess_column_or_none(
+            sci_cols_available, size_chart_image_title_col, keywords=["title"]
+        )
         default_sci_title_idx = (
-            sci_cols_available.index(size_chart_image_title_col) if size_chart_image_title_col in sci_cols_available else 0
+            sci_cols_available.index(default_sci_title_guess) if default_sci_title_guess in sci_cols_available else 0
         )
         size_chart_image_title_col = st.selectbox(
-            "Title column (matched against generated product Title)",
+            "Title column (fallback match against generated product Title, optional)",
             options=sci_cols_available,
             index=default_sci_title_idx,
             key="size_chart_image_title_col_select",
         )
     with sci2:
+        default_sci_url_guess = guess_column_or_none(
+            sci_cols_available, size_chart_image_url_col, keywords=["size chart link", "link", "url", "image"]
+        ) or size_chart_image_url_col
         default_sci_url_idx = (
-            sci_cols_available.index(size_chart_image_url_col) if size_chart_image_url_col in sci_cols_available else 0
+            sci_cols_available.index(default_sci_url_guess) if default_sci_url_guess in sci_cols_available else 0
         )
         size_chart_image_url_col = st.selectbox(
-            "Size Chart Image URL column",
+            "Size Chart Image URL / Link column",
             options=sci_cols_available,
             index=default_sci_url_idx,
             key="size_chart_image_url_col_select",
@@ -899,9 +1176,8 @@ if size_chart_image_file is not None:
 
     st.caption(
         "Optional: if your Size Chart Sheet also has a Style Number column, mapping "
-        "it here gives an exact match tried BEFORE the Title match above."
+        "it here gives an exact match tried BEFORE the Title fallback."
     )
-    sci_none_option = "— not in my sheet / skip —"
     sci_style_options = [sci_none_option] + sci_cols_available
     default_sci_style_idx = (
         sci_style_options.index(SIZE_CHART_IMAGE_COLS["style_no"])
@@ -916,9 +1192,13 @@ if size_chart_image_file is not None:
     size_chart_image_style_col = None if _sci_style_choice == sci_none_option else _sci_style_choice
 else:
     size_chart_image_style_col = None
+    size_chart_image_composite_key_col = None
+    size_chart_image_gender_article_key_col = None
 
 category_keyword_col = CATEGORY_SHEET_COLS["keyword"]
 category_id_col = CATEGORY_SHEET_COLS["category_id"]
+category_composite_key_col = None
+category_name_col = CATEGORY_SHEET_COLS["category_name"]
 
 if category_file is not None:
     _cat_preview_df = load_any(category_file)
@@ -926,16 +1206,41 @@ if category_file is not None:
     cat_cols_available = list(_cat_preview_df.columns)
 
     st.markdown("#### 📌 Category Sheet — Column Selection")
+    st.caption(
+        "If your sheet has a dedicated composite key column, that's matched first "
+        "(exact). Otherwise, the Category Name column below is scored against all "
+        "available Master Sheet attributes (Age Group, Gender, Article Group, "
+        "Article Type, Activity Group, Product Division) to find the best match -- "
+        "this is what most Category Sheets (ID + breadcrumb-style Name only) need. "
+        "Title Keyword is a last-resort fallback."
+    )
+    cat_none_option = "— not in my sheet / skip —"
+    cat_key_options = [cat_none_option] + cat_cols_available
+    default_cat_key_idx = (
+        cat_key_options.index(CATEGORY_SHEET_COLS["composite_key"])
+        if CATEGORY_SHEET_COLS["composite_key"] in cat_key_options else 0
+    )
+    _cat_key_choice = st.selectbox(
+        "Category Key column (optional -- exact composite-key match, tried first)",
+        options=cat_key_options,
+        index=default_cat_key_idx,
+        key="category_composite_key_col_select",
+    )
+    category_composite_key_col = None if _cat_key_choice == cat_none_option else _cat_key_choice
+
     cc1, cc2 = st.columns(2)
     with cc1:
-        default_kw_idx = (
-            cat_cols_available.index(category_keyword_col) if category_keyword_col in cat_cols_available else 0
+        default_name_guess = guess_column_or_none(
+            cat_cols_available, category_name_col, keywords=["category name", "name"]
+        ) or category_name_col
+        default_name_idx = (
+            cat_cols_available.index(default_name_guess) if default_name_guess in cat_cols_available else 0
         )
-        category_keyword_col = st.selectbox(
-            "Title keyword column",
+        category_name_col = st.selectbox(
+            "Category Name column (attribute-based best-match)",
             options=cat_cols_available,
-            index=default_kw_idx,
-            key="category_keyword_col_select",
+            index=default_name_idx,
+            key="category_name_col_select",
         )
     with cc2:
         default_id_idx = (
@@ -947,6 +1252,21 @@ if category_file is not None:
             index=default_id_idx,
             key="category_id_col_select",
         )
+
+    cc3, cc4 = st.columns(2)
+    with cc3:
+        cat_kw_none_option = "— not in my sheet / skip —"
+        cat_kw_options = [cat_kw_none_option] + cat_cols_available
+        default_kw_idx = (
+            cat_kw_options.index(category_keyword_col) if category_keyword_col in cat_kw_options else 0
+        )
+        _cat_kw_choice = st.selectbox(
+            "Title Keyword column (optional last-resort fallback)",
+            options=cat_kw_options,
+            index=default_kw_idx,
+            key="category_keyword_col_select",
+        )
+        category_keyword_col = "" if _cat_kw_choice == cat_kw_none_option else _cat_kw_choice
 
 image_sku_col = IMAGE_SHEET_COLS["sku"]
 image_url_col = IMAGE_SHEET_COLS["url_col"]
@@ -1007,7 +1327,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             output_columns = list(sample_df.columns)
 
             try:
-                result_df, parent_count, child_count = build_upload_sheet(
+                result_df, parent_count, child_count, mapping_log = build_upload_sheet(
                     master_df, image_df, size_chart_template_df, category_df, output_columns,
                     price_col=price_col,
                     master_col_map=master_col_map,
@@ -1017,10 +1337,14 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_attr_col=size_chart_attr_col,
                     category_keyword_col=category_keyword_col,
                     category_id_col=category_id_col,
+                    category_composite_key_col=category_composite_key_col,
+                    category_name_col=category_name_col,
                     size_chart_image_df=size_chart_image_df,
                     size_chart_image_title_col=size_chart_image_title_col,
                     size_chart_image_url_col=size_chart_image_url_col,
                     size_chart_image_style_col=size_chart_image_style_col,
+                    size_chart_image_composite_key_col=size_chart_image_composite_key_col,
+                    size_chart_image_gender_article_key_col=size_chart_image_gender_article_key_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
@@ -1032,6 +1356,28 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 st.stop()
 
         st.success(f"Generated {len(result_df)} rows ({parent_count} parent, {child_count} child).")
+
+        # --- Mapping log/report (per General Requirements): shows successfully
+        # mapped rows, unmatched rows, and missing mapping combinations for
+        # each of the three mappings, without needing to inspect the full sheet. ---
+        with st.expander("📋 Mapping Report (Category ID / Size Chart Image URL / Template Attribute 1)", expanded=False):
+            for label, key in [
+                ("Category ID", "category"),
+                ("Size Chart Image URL", "size_chart_image"),
+                ("Template Attribute 1 (Size Chart Template)", "size_chart_template"),
+            ]:
+                log_df = pd.DataFrame(mapping_log[key])
+                if log_df.empty:
+                    continue
+                matched_count = int(log_df["Matched"].sum())
+                total_count = len(log_df)
+                unmatched_df = log_df[~log_df["Matched"]]
+                st.markdown(f"**{label}:** {matched_count} / {total_count} groups matched")
+                if not unmatched_df.empty:
+                    missing_keys = sorted(unmatched_df["Key"].unique().tolist())
+                    st.caption(f"{len(unmatched_df)} unmatched row(s). Missing key combinations:")
+                    st.dataframe(pd.DataFrame({"Missing Key": missing_keys}), use_container_width=True)
+
         st.dataframe(result_df, use_container_width=True)
 
         buffer = io.BytesIO()
