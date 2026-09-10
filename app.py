@@ -1053,7 +1053,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             out_df[col] = ""
     out_df = out_df[output_columns]
 
-    return out_df, parent_count, child_count, mapping_log
+    resolved_cols = {"sci": sci, "sct": sct, "cc": cc}
+    return out_df, parent_count, child_count, mapping_log, resolved_cols
 
 
 # ======================================================================================
@@ -1456,6 +1457,26 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
     elif sample_file is None:
         st.error("Sample Upload Format is required — it defines the exact output columns/order.")
     else:
+        if image_file is None:
+            st.warning(
+                "⚠️ No Image Sheet uploaded — every 'Product Image URL(s)' value will be "
+                "blank in the output."
+            )
+        if size_chart_image_file is None:
+            st.warning(
+                "⚠️ No Size Chart Sheet uploaded — 'Size chart Image URL' will be blank "
+                "for every row."
+            )
+        if size_chart_template_file is None:
+            st.warning(
+                "⚠️ No Size Chart Template Sheet uploaded — 'Template Attribute 1' will be "
+                "blank for every row."
+            )
+        if category_file is None:
+            st.warning(
+                "⚠️ No Category Sheet uploaded — 'Category ID' will be blank for every row."
+            )
+
         with st.spinner("Processing..."):
             master_df = load_any(master_file)
             image_df = load_any(image_file)
@@ -1467,7 +1488,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             output_columns = list(sample_df.columns)
 
             try:
-                result_df, parent_count, child_count, mapping_log = build_upload_sheet(
+                result_df, parent_count, child_count, mapping_log, resolved_cols = build_upload_sheet(
                     master_df, image_df, size_chart_template_df, category_df, output_columns,
                     price_col=price_col,
                     master_col_map=master_col_map,
@@ -1499,13 +1520,26 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
 
         # --- Mapping log/report (per General Requirements): shows successfully
         # mapped rows, unmatched rows, and missing mapping combinations for
-        # each of the three mappings, without needing to inspect the full sheet. ---
-        with st.expander("📋 Mapping Report (Category ID / Size Chart Image URL / Template Attribute 1)", expanded=False):
-            for label, key in [
-                ("Category ID", "category"),
-                ("Size Chart Image URL", "size_chart_image"),
-                ("Template Attribute 1 (Size Chart Template)", "size_chart_template"),
-            ]:
+        # each of the three mappings, without needing to inspect the full sheet.
+        # Auto-expands and shows real diagnostics (sheet uploaded? actual key
+        # values found in the sheet vs what was attempted) whenever a mapping
+        # has ZERO matches, so a "why is this blank" question is answerable
+        # directly from this report instead of guessing. ---
+        mapping_defs = [
+            ("Category ID", "category", category_df, resolved_cols["cc"]["composite_key"] or resolved_cols["cc"]["category_name"]),
+            ("Size Chart Image URL", "size_chart_image", size_chart_image_df, resolved_cols["sci"]["gender_article_key"] or resolved_cols["sci"]["composite_key"]),
+            ("Template Attribute 1 (Size Chart Template)", "size_chart_template", size_chart_template_df, resolved_cols["sct"]["key"]),
+        ]
+        any_zero_match = any(
+            pd.DataFrame(mapping_log[key])["Matched"].sum() == 0
+            for _, key, _, _ in mapping_defs
+            if not pd.DataFrame(mapping_log[key]).empty
+        )
+        with st.expander(
+            "📋 Mapping Report (Category ID / Size Chart Image URL / Template Attribute 1)",
+            expanded=any_zero_match,
+        ):
+            for label, key, sheet_df, sheet_key_col in mapping_defs:
                 log_df = pd.DataFrame(mapping_log[key])
                 if log_df.empty:
                     continue
@@ -1513,10 +1547,33 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                 total_count = len(log_df)
                 unmatched_df = log_df[~log_df["Matched"]]
                 st.markdown(f"**{label}:** {matched_count} / {total_count} groups matched")
+
+                if sheet_df is None:
+                    st.error(f"⚠️ No sheet was uploaded for {label} -- this is why it's entirely blank. Upload the sheet above.")
+                    continue
+
                 if not unmatched_df.empty:
                     missing_keys = sorted(unmatched_df["Key"].unique().tolist())
-                    st.caption(f"{len(unmatched_df)} unmatched row(s). Missing key combinations:")
-                    st.dataframe(pd.DataFrame({"Missing Key": missing_keys}), use_container_width=True)
+                    st.caption(f"{len(unmatched_df)} unmatched row(s). Keys attempted from your Master Sheet:")
+                    st.dataframe(pd.DataFrame({"Key attempted (from Master Sheet)": missing_keys}), use_container_width=True)
+
+                    if matched_count == 0 and sheet_key_col and sheet_key_col in sheet_df.columns:
+                        sheet_sample_keys = sorted(
+                            sheet_df[sheet_key_col].astype(str).dropna().unique().tolist()
+                        )[:15]
+                        st.caption(f"Actual values found in your sheet's \"{sheet_key_col}\" column (compare against the attempted keys above):")
+                        st.dataframe(pd.DataFrame({f'Values in "{sheet_key_col}"': sheet_sample_keys}), use_container_width=True)
+                        st.info(
+                            "If NONE of the attempted keys appear (even loosely) in the actual sheet values above, "
+                            "the Master Sheet's Gender/Article Group/etc. column mapping is likely pointing at the "
+                            "wrong column, or producing blank values -- double-check the 'Map Master Sheet columns' "
+                            "section further up."
+                        )
+                    elif matched_count == 0 and (not sheet_key_col or sheet_key_col not in sheet_df.columns):
+                        st.error(
+                            f"⚠️ The key column selected for this sheet (\"{sheet_key_col}\") doesn't actually exist "
+                            "in the uploaded file -- please re-check the column dropdown above."
+                        )
 
         st.dataframe(result_df, use_container_width=True)
 
