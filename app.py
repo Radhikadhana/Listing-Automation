@@ -305,7 +305,13 @@ def clean_title(brand, gender, title, search_color_name_raw, is_footwear=None):
     for EVERY division, wrapped in PARENTHESES with a leading space inside,
     e.g. "( White)" -- matching the required sample format exactly.
     """
-    title = title or ""
+    # NaN (a blank cell) is truthy in Python, so `title or ""` would keep a
+    # NaN float instead of falling back to "" -- crashing re.sub() below
+    # since it requires a string. Coerce properly instead.
+    if title is None or (isinstance(title, float) and pd.isna(title)):
+        title = ""
+    else:
+        title = str(title)
     for pattern, repl in TITLE_REPLACEMENTS.items():
         title = re.sub(pattern, repl, title, flags=re.IGNORECASE)
 
