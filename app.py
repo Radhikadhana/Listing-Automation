@@ -122,6 +122,16 @@ CATEGORY_SHEET_COLS = {
     "category_id": "Category ID",
 }
 
+# Lazada Item Spec sheet (LAZADA ONLY): maps a Category ID to fixed
+# Product Specification 4-12 values (e.g. "normal.material_filter=Rubber").
+# The Product Specification 4..12 column names match the OUTPUT column
+# names exactly, so they're copied straight across once matched -- only
+# the Category ID key column needs mapping.
+LAZADA_ITEM_SPEC_COLS = {
+    "cat_id": "Cat ID",
+}
+LAZADA_ITEM_SPEC_VALUE_COLUMNS = [f"Product Specification {n}" for n in range(4, 13)]
+
 
 REGION_CURRENCY = {"SG": "SGD", "MY": "MYR", "PH": "PHP"}
 MARKETPLACES = ["Lazada", "Shopee", "Zalora", "Tiktok"]
@@ -513,6 +523,36 @@ def size_sort_key(size_val, is_footwear_row=False):
         return (1, 0, num, "")
     except (ValueError, TypeError):
         return (2, 0, 0, s)
+
+
+def match_lazada_item_specs(category_id, lazada_spec_df, cat_id_col, value_columns):
+    """
+    Looks up the resolved Category ID in the Lazada Item Spec Sheet and
+    returns a dict of {output_column_name: value} for every Product
+    Specification 4..12 column that has a real (non-blank) value in the
+    matched row. LAZADA ONLY. Returns {} if the sheet isn't uploaded, the
+    Category ID doesn't match anything, or the key column is missing --
+    never guesses or fabricates values.
+    """
+    if lazada_spec_df is None or lazada_spec_df.empty:
+        return {}
+    if not category_id or cat_id_col not in lazada_spec_df.columns:
+        return {}
+
+    norm_target = str(category_id).strip().lower()
+    id_col_norm = lazada_spec_df[cat_id_col].astype(str).str.strip().str.lower()
+    match = lazada_spec_df[id_col_norm == norm_target]
+    if match.empty:
+        return {}
+
+    row = match.iloc[0]
+    result = {}
+    for col in value_columns:
+        if col in lazada_spec_df.columns:
+            val = _clean_field_value(row.get(col, ""))
+            if val:
+                result[col] = val
+    return result
 
 
 def match_category_id_by_attributes(attribute_values, category_df, name_col, id_col):
@@ -958,6 +998,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                         size_chart_image_style_col=None,
                         size_chart_image_composite_key_col=None,
                         size_chart_image_gender_article_key_col=None,
+                        lazada_item_spec_df=None, lazada_item_spec_cat_id_col=None,
                         region="PH", marketplace="Lazada"):
     mc = dict(MASTER_COLS)
     if master_col_map:
@@ -982,6 +1023,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         "category_id": category_id_col if category_id_col else CATEGORY_SHEET_COLS["category_id"],
         "composite_key": category_composite_key_col,
         "category_name": category_name_col if category_name_col else CATEGORY_SHEET_COLS["category_name"],
+    }
+    lisc = {
+        "cat_id": lazada_item_spec_cat_id_col if lazada_item_spec_cat_id_col else LAZADA_ITEM_SPEC_COLS["cat_id"],
     }
     sci = {
         "title_keyword": size_chart_image_title_col if size_chart_image_title_col else SIZE_CHART_IMAGE_COLS["title_keyword"],
@@ -1065,6 +1109,16 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         mapping_log["category"].append({
             "SKU/Model": model_value, "Key": shared_composite_key, "Matched": bool(category_id),
         })
+
+        # --- Lazada Item Spec lookup (LAZADA ONLY): Category ID -> fixed
+        # Product Specification 4..12 values, looked up from the resolved
+        # Category ID above. Parent row only, same pattern as Category ID /
+        # Size Chart Image URL / Template Attribute 1. ---
+        lazada_item_specs = {}
+        if marketplace == "Lazada":
+            lazada_item_specs = match_lazada_item_specs(
+                category_id, lazada_item_spec_df, lisc["cat_id"], LAZADA_ITEM_SPEC_VALUE_COLUMNS
+            )
 
         # --- 3. Size Chart Template mapping (Template Attribute 1) ---
         # SHOPEE: skipped entirely -- Template Attribute 1 stays blank for
@@ -1235,6 +1289,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Category ID": category_id,
             "Size Chart Image URL": size_chart_image_url,
             "Template Attribute 1": template_attr_1,
+            # Lazada Item Spec lookup result (Product Specification 4..12),
+            # merged in last so it doesn't get overwritten by anything above.
+            **lazada_item_specs,
         }
         rows.append(parent_row)
 
@@ -1344,6 +1401,10 @@ with col2:
     size_chart_template_file = st.file_uploader(
         "Size Chart Template Sheet (.xlsx/.csv) — provides Template Attribute 1, direct key lookup",
         type=["xlsx", "csv"], key="sizecharttemplate"
+    )
+    lazada_item_spec_file = st.file_uploader(
+        "Lazada Item Spec Sheet (.xlsx/.csv) — LAZADA ONLY, Category ID → Product Specification 4-12",
+        type=["xlsx", "csv"], key="lazadaitemspec",
     )
     sample_file = st.file_uploader(
         "Sample Upload Format (.xlsx/.csv) — REQUIRED, defines exact output columns",
@@ -1622,6 +1683,31 @@ if category_file is not None:
         )
         category_keyword_col = "" if _cat_kw_choice == cat_kw_none_option else _cat_kw_choice
 
+# --- Lazada Item Spec Sheet — Column Selection (LAZADA ONLY) ---
+lazada_item_spec_cat_id_col = LAZADA_ITEM_SPEC_COLS["cat_id"]
+
+if lazada_item_spec_file is not None:
+    _lisc_preview_df = load_any(lazada_item_spec_file)
+    lazada_item_spec_file.seek(0)
+    lisc_cols_available = list(_lisc_preview_df.columns)
+
+    st.markdown("#### 📌 Lazada Item Spec Sheet — Column Selection")
+    st.caption(
+        "Matched against the resolved Category ID -- LAZADA ONLY. Product "
+        "Specification 4 through 12 columns in this sheet are copied "
+        "straight to the same-named output columns on the Parent row; "
+        "only the Category ID key column needs mapping below."
+    )
+    default_lisc_idx = guess_column_index(
+        lisc_cols_available, lazada_item_spec_cat_id_col, keywords=["cat id", "category id", "cat_id"]
+    )
+    lazada_item_spec_cat_id_col = st.selectbox(
+        "Category ID column",
+        options=lisc_cols_available,
+        index=default_lisc_idx,
+        key="lazada_item_spec_cat_id_col_select",
+    )
+
 image_sku_col = IMAGE_SHEET_COLS["sku"]
 image_url_col = IMAGE_SHEET_COLS["url_col"]
 
@@ -1689,6 +1775,11 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             st.warning(
                 "⚠️ No Category Sheet uploaded — 'Category ID' will be blank for every row."
             )
+        if selected_marketplace == "Lazada" and lazada_item_spec_file is None:
+            st.warning(
+                "⚠️ No Lazada Item Spec Sheet uploaded — 'Product Specification 4' onward "
+                "will be blank for every row."
+            )
 
         with st.spinner("Processing..."):
             master_df = load_any(master_file)
@@ -1696,6 +1787,7 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
             size_chart_template_df = load_any(size_chart_template_file)
             size_chart_image_df = load_any(size_chart_image_file)
             category_df = load_any(category_file)
+            lazada_item_spec_df = load_any(lazada_item_spec_file)
             sample_df = load_any(sample_file)
 
             output_columns = list(sample_df.columns)
@@ -1719,6 +1811,8 @@ if st.button("🚀 Generate Upload Sheet", type="primary"):
                     size_chart_image_style_col=size_chart_image_style_col,
                     size_chart_image_composite_key_col=size_chart_image_composite_key_col,
                     size_chart_image_gender_article_key_col=size_chart_image_gender_article_key_col,
+                    lazada_item_spec_df=lazada_item_spec_df,
+                    lazada_item_spec_cat_id_col=lazada_item_spec_cat_id_col,
                     region=selected_region,
                     marketplace=selected_marketplace,
                 )
