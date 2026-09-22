@@ -376,6 +376,65 @@ def clean_description(raw_desc, style_number, care=None, care_label=None):
     return desc.strip()
 
 
+def build_shopee_description(raw_desc, style_number, care=None, care_label=None):
+    """
+    Ported directly from the Shopee Apps Script description-merge logic
+    (kept for Shopee ONLY -- Lazada continues to use clean_description() /
+    extract_description_main() / extract_productstory() / build_short_description(),
+    completely unchanged). Produces ONE merged description string:
+      - Strips <h3>PRODUCT STORY</h3> variants entirely.
+      - Strips <br/></br>, <br />, and plain <br/> line-break variants.
+      - Converts <h3>DETAILS</h3> -> "\r\n\r\nDETAILS" and
+        <h3>FEATURES & BENEFITS</h3> (or "+ BENEFITS") -> "\r\n\r\nFEATURES & BENEFITS".
+      - Converts <li> -> "\r\n- " bullets; strips </li>, <ul>, </ul>, <p>, </p>.
+      - Appends "\r\n- Style : <style_number>\r\n".
+      - Appends "\r\n\r\nCARE\r\n<care>" and "\r\n\r\nCARE LABEL\r\n<care_label>"
+        when present (unquoted headers, unlike Lazada's quoted "CARE").
+    Uses regex (all occurrences) rather than the original script's plain
+    .replace() (first occurrence only) so multiple <li>/<br> tags are all
+    handled correctly in one pass.
+    """
+    if raw_desc is None or (isinstance(raw_desc, float) and pd.isna(raw_desc)):
+        raw_desc = ""
+    desc = str(raw_desc)
+
+    # Strip <h3>PRODUCT STORY</h3> (any casing/spacing variant) entirely.
+    desc = re.sub(r"<h3>\s*product\s*story\s*</h3>", "", desc, flags=re.IGNORECASE)
+
+    # Strip line breaks: <br/></br>, <br />, <br/>, etc.
+    desc = re.sub(r"<br\s*/?>\s*</br>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"<br\s*/?>", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"</br>", "", desc, flags=re.IGNORECASE)
+
+    desc = desc.strip()
+
+    # DETAILS / FEATURES & BENEFITS headings -> "\r\n\r\n" + plain text heading.
+    desc = re.sub(r"<h3>\s*details\s*</h3>", "\r\n\r\nDETAILS", desc, flags=re.IGNORECASE)
+    desc = re.sub(
+        r"<h3>\s*features\s*(&|\+)\s*benefits\s*</h3>",
+        "\r\n\r\nFEATURES & BENEFITS",
+        desc,
+        flags=re.IGNORECASE,
+    )
+
+    # <li> -> "\r\n- " bullet; strip </li>, <ul>, </ul>, <p>, </p> entirely.
+    desc = re.sub(r"<li[^>]*>", "\r\n- ", desc, flags=re.IGNORECASE)
+    for tag in [r"</li>", r"<ul[^>]*>", r"</ul>", r"<p[^>]*>", r"</p>"]:
+        desc = re.sub(tag, "", desc, flags=re.IGNORECASE)
+
+    # Append Style line.
+    desc = desc + "\r\n- Style : " + str(style_number) + "\r\n"
+
+    care_val = _clean_field_value(care)
+    care_label_val = _clean_field_value(care_label)
+    if care_val:
+        desc = desc + "\r\n\r\nCARE\r\n" + care_val
+    if care_label_val:
+        desc = desc + "\r\n\r\nCARE LABEL\r\n" + care_label_val
+
+    return desc
+
+
 def is_footwear(product_division):
     if not product_division:
         return False
@@ -914,59 +973,81 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         })
 
         # --- 3. Size Chart Template mapping (Template Attribute 1) ---
-        # Your actual sheet only has Gender_ArticleGroup (no 6-field composite
-        # key column), so that's tried FIRST here; the shared composite key
-        # is tried second in case a sheet with that column is used later.
-        gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
-        template_attr_1 = match_size_chart_template(
-            gender_article_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
-        )
-        if not template_attr_1:
+        # SHOPEE: skipped entirely -- Template Attribute 1 stays blank for
+        # Shopee, per spec ("no need to update" when Shopee is selected).
+        # LAZADA: unchanged -- Gender_ArticleGroup tried first (your actual
+        # sheet's key column), full composite key as fallback.
+        if marketplace == "Shopee":
+            template_attr_1 = ""
+        else:
+            gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
             template_attr_1 = match_size_chart_template(
-                shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+                gender_article_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
             )
-        mapping_log["size_chart_template"].append({
-            "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(template_attr_1),
-        })
+            if not template_attr_1:
+                template_attr_1 = match_size_chart_template(
+                    shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+                )
+            mapping_log["size_chart_template"].append({
+                "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(template_attr_1),
+            })
 
-        # --- 2. Size Chart Image URL mapping ---
-        # Same reasoning: Gender_ArticleGroup is your actual sheet's key
-        # column, so it's tried FIRST (primary), with the shared composite
-        # key, Style Number, and Title kept as further fallbacks.
+        # --- 2. Size Chart Image URL mapping (unaffected by marketplace --
+        # still resolved for both Lazada and Shopee, per spec: only Template
+        # Attribute 1 is the one skipped for Shopee). ---
+        gender_article_key_for_image = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
         size_chart_image_url = match_size_chart_image(
             title, size_chart_image_df, sci["title_keyword"], sci["image_url"],
             style_number=style_number, style_col=sci["style_no"],
             composite_key=shared_composite_key, composite_key_col=sci["composite_key"],
-            gender_article_key=gender_article_key, gender_article_key_col=sci["gender_article_key"],
+            gender_article_key=gender_article_key_for_image, gender_article_key_col=sci["gender_article_key"],
         )
         mapping_log["size_chart_image"].append({
-            "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(size_chart_image_url),
+            "SKU/Model": model_value, "Key": gender_article_key_for_image, "Matched": bool(size_chart_image_url),
         })
 
-        template_attr_2 = extract_description_main(raw_desc)
-        template_attr_3 = extract_productstory(raw_desc)
-
-        short_description = build_short_description(
-            brand=_clean_field_value(first.get(mc["brand"], "")) or "PUMA",
-            color_name=extract_search_color_name(title_color_raw),
-            gender=gender_val,
-            activity_group=first.get(mc["activity_group"], ""),
-            collection=first.get(mc["collection"], ""),
-            material=first.get(mc["material"], ""),
-            toe_type=first.get(mc["toe_type"], ""),
-            heel_type=first.get(mc["heel_type"], ""),
-            fastener=first.get(mc["fastener"], ""),
-            fit=first.get(mc["fit"], ""),
-            puma_technology=first.get(mc["puma_technology"], ""),
-            technology_purpose=first.get(mc["technology_purpose"], ""),
-            style_number=style_number,
-            is_footwear=footwear,
-        )
+        # --- Description-family fields: Template Attribute 2/3, Short
+        # Description, Product Description 1. ---
+        # SHOPEE: all FOUR fields get the SAME merged description, built via
+        # the Shopee Apps Script logic (build_shopee_description) -- style,
+        # care, and care label merged into one flat description string.
+        # LAZADA: completely unchanged from before -- separate logic for
+        # each field (extract_description_main / extract_productstory /
+        # build_short_description bullet list / fixed USER_TEMPLATE_NAME).
+        if marketplace == "Shopee":
+            shopee_description = build_shopee_description(
+                raw_desc, style_number,
+                first.get(mc["care"], None), first.get(mc["care_label"], None),
+            )
+            template_attr_2 = shopee_description
+            template_attr_3 = shopee_description
+            short_description = shopee_description
+            product_description_1 = shopee_description
+        else:
+            template_attr_2 = extract_description_main(raw_desc)
+            template_attr_3 = extract_productstory(raw_desc)
+            short_description = build_short_description(
+                brand=_clean_field_value(first.get(mc["brand"], "")) or "PUMA",
+                color_name=extract_search_color_name(title_color_raw),
+                gender=gender_val,
+                activity_group=first.get(mc["activity_group"], ""),
+                collection=first.get(mc["collection"], ""),
+                material=first.get(mc["material"], ""),
+                toe_type=first.get(mc["toe_type"], ""),
+                heel_type=first.get(mc["heel_type"], ""),
+                fastener=first.get(mc["fastener"], ""),
+                fit=first.get(mc["fit"], ""),
+                puma_technology=first.get(mc["puma_technology"], ""),
+                technology_purpose=first.get(mc["technology_purpose"], ""),
+                style_number=style_number,
+                is_footwear=footwear,
+            )
+            product_description_1 = USER_TEMPLATE_NAME
 
         total_variation_count = len(group_df)
 
         base_row = {
-            "Product Description 1": USER_TEMPLATE_NAME,
+            "Product Description 1": product_description_1,
             "Product Name": title,
             "Title": title,
             "Description": desc,
