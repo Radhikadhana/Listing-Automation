@@ -1066,6 +1066,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             # Shopee-only: fixed shipping service value, applied identically
             # to every row (Parent and Child alike) since it's in base_row.
             "Shipping Service": "Doorstep Delivery:1.75" if marketplace == "Shopee" else "",
+            "Shipping Service Details": "Doorstep Delivery:1.75" if marketplace == "Shopee" else "",
             "What's in the Box": f"1 X {title}",
             "Template Attribute 2": template_attr_2,
             "Template Attribute 3": template_attr_3,
