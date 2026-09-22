@@ -62,7 +62,6 @@ MASTER_COLS_FIELDS = [
     ("brand", "Brand", True),
     ("gender", "Gender", True),
     ("title", "Regional Display Name (used in Title)", True),
-    ("color_family", "Color Family", True),
     ("color_name", "Color Name (used in Variation 1)", True),
     ("search_color_name", "Search Color Name (used in Title/Short Description, code stripped)", False),
     ("size", "Size", False),
@@ -874,6 +873,12 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
     mc = dict(MASTER_COLS)
     if master_col_map:
         mc.update({k: v for k, v in master_col_map.items() if v})
+
+    # Color Family has no dedicated mapping dropdown -- most Master Sheets
+    # don't have a distinct "Color Family" column, so it's auto-derived to
+    # mirror whichever real column was mapped to Color Name. No manual
+    # selection needed.
+    mc["color_family"] = mc["color_name"]
 
     ic = {
         "sku": image_sku_col if image_sku_col else IMAGE_SHEET_COLS["sku"],
