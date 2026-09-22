@@ -1089,6 +1089,20 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             first_child_formatted_size = format_size_value(first_rec.get(mc["uk_size"], ""), footwear)
             first_child_price = get_price(first_rec, price_col)
 
+        # Product Specification 1/2/3 differ by marketplace:
+        #   LAZADA: sku.color_family= / sku.size= / normal.delivery_option_economy=
+        #           (unchanged from before).
+        #   SHOPEE: Product Specification 1 = "Brand=PUMA"; 2 and 3 are left
+        #           blank -- none of the Lazada sku.*/normal.* values apply.
+        if marketplace == "Shopee":
+            parent_spec_1 = "Brand=PUMA"
+            parent_spec_2 = ""
+            parent_spec_3 = ""
+        else:
+            parent_spec_1 = f"sku.color_family={first_child_color_name}"
+            parent_spec_2 = f"sku.size={first_child_formatted_size}"
+            parent_spec_3 = 'normal.delivery_option_economy=["No",]'
+
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
             "Row Type": "Parent",
@@ -1104,10 +1118,9 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Images": parent_images,
             "Product Image URL(s)": parent_images,
             "Image URL": parent_images,
-            "Product Specification 1": f"sku.color_family={first_child_color_name}",
-            "Product Specification 2": f"sku.size={first_child_formatted_size}",
-            # Fixed literal value, Parent row only.
-            "Product Specification 3": 'normal.delivery_option_economy=["No",]',
+            "Product Specification 1": parent_spec_1,
+            "Product Specification 2": parent_spec_2,
+            "Product Specification 3": parent_spec_3,
             # Parent-only mapping fields -- Category ID / Size Chart Image
             # URL / Template Attribute 1 are set ONLY on the Parent row.
             "Category ID": category_id,
@@ -1122,6 +1135,14 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             uk_size_raw = rec.get(mc["uk_size"], "")
             formatted_size = format_size_value(uk_size_raw, footwear)
             child_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
+
+            if marketplace == "Shopee":
+                child_spec_1 = "Brand=PUMA"
+                child_spec_2 = ""
+            else:
+                child_spec_1 = f"sku.color_family={color_name}"
+                child_spec_2 = f"sku.size={formatted_size}"
+
             child_row = {
                 "Row Type": "Child",
                 **base_row,
@@ -1139,8 +1160,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
                 "RRP": get_price(rec, price_col),
                 "Variation 1": color_name,
                 "Variation 2": formatted_size,
-                "Product Specification 1": f"sku.color_family={color_name}",
-                "Product Specification 2": f"sku.size={formatted_size}",
+                "Product Specification 1": child_spec_1,
+                "Product Specification 2": child_spec_2,
                 "Stock": 0,
                 "Images": child_images,
                 "Product Image URL(s)": child_images,
