@@ -878,6 +878,28 @@ def first_nonblank(*values):
     return ""
 
 
+def clean_material_for_short_description(raw_material):
+    """
+    Keeps only the actual material composition (e.g. "Main Material 1: 95%
+    polyester, 5% elastane") and drops trailing technical spec fields that
+    are sometimes appended directly onto the value with no separating
+    space -- fabric construction, treatment, weight, internal codes, print
+    method, etc. (e.g. "-jersey-wicking: chemical-156.00 g/m²-PS/01-CF/002-
+    print: sublimation"). Those extra fields are recognized by the pattern
+    "-<label>:" (a hyphen immediately followed by a word/phrase and a
+    colon) appearing right after the composition list; everything from
+    that point onward is truncated. If no such pattern is found, the
+    material value is returned unchanged (nothing to strip).
+    """
+    val = _clean_field_value(raw_material)
+    if not val:
+        return val
+    match = re.search(r"-[A-Za-z][A-Za-z\-]*(?:\s+[A-Za-z\-]+)*:", val)
+    if match:
+        val = val[: match.start()].strip()
+    return val
+
+
 def build_short_description(brand, color_name, gender, activity_group, collection,
                              material, toe_type, heel_type,
                              fastener, fit, puma_technology, technology_purpose, style_number,
@@ -888,7 +910,10 @@ def build_short_description(brand, color_name, gender, activity_group, collectio
       - Apparel & Accessories: ONLY the plain "Material" value is included --
         no sub-fields (Material Local, Upper/Mid Sole/Outer Sole/Shell
         Material) are ever added; those "extra content" fields are dropped
-        entirely from the Short Description for every division.
+        entirely from the Short Description for every division. The
+        material value itself is also truncated to just the composition
+        (see clean_material_for_short_description) -- trailing technical
+        spec codes attached to the same cell are stripped out.
     """
     fields = [
         ("Brand", brand),
@@ -898,7 +923,7 @@ def build_short_description(brand, color_name, gender, activity_group, collectio
         ("Collection", collection),
     ]
     if not is_footwear:
-        fields.append(("Material", material))
+        fields.append(("Material", clean_material_for_short_description(material)))
     fields.extend([
         ("Toe Type", toe_type),
         ("Heel Type", heel_type),
