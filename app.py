@@ -1108,6 +1108,16 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             parent_spec_2 = f"sku.size={first_child_formatted_size}"
             parent_spec_3 = 'normal.delivery_option_economy=["No",]'
 
+        # Parent row's Variation 1/2 HEADER LABELS differ by marketplace:
+        #   LAZADA: literal "color_family" / "size" (unchanged).
+        #   SHOPEE: "Color" / "Size".
+        if marketplace == "Shopee":
+            parent_variation_1_label = "Color"
+            parent_variation_2_label = "Size"
+        else:
+            parent_variation_1_label = "color_family"
+            parent_variation_2_label = "size"
+
         parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
         parent_row = {
             "Row Type": "Parent",
@@ -1116,8 +1126,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Seller SKU": parent_sku_value,
             "Parent SKU": "",
             "Total variation": total_variation_count,
-            "Variation 1": "color_family",
-            "Variation 2": "size",
+            "Variation 1": parent_variation_1_label,
+            "Variation 2": parent_variation_2_label,
             "Stock": 0,
             "RRP": first_child_price,
             "Images": parent_images,
