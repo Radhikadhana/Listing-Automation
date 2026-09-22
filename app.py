@@ -187,6 +187,70 @@ def guess_column_or_none(options, preferred_name, keywords):
     return None
 
 
+# Known real-world header naming conventions seen across different Master
+# Sheets in this org: some use compact camel-case ("StyleNo", "ColorNumber"),
+# others use verbose spaced names with "(English)" suffixes ("Style Number",
+# "Regional Display Name (English)"). Rather than hardcoding ONE convention
+# as the default (which breaks the other sheet format), every candidate
+# below is tried in order -- exact match first across ALL candidates, then
+# substring keyword match -- so auto-detection works for either sheet style
+# with zero manual clicking.
+MASTER_COLS_CANDIDATES = {
+    "style_no": ["StyleNo", "Style No", "Style No.", "Style Number", "Style_No"],
+    "color_no": ["ColorNumber", "Color Number", "Color No", "Color No.", "Colour Number"],
+    "brand": ["Brand"],
+    "gender": ["Gender"],
+    "title": ["RegionalDisplayName", "Regional Display Name (English)", "Regional Display Name"],
+    "color_name": ["ColorName", "Color Name"],
+    "search_color_name": ["Search Color Name", "SearchColorName"],
+    "uk_size": ["SizeUK", "UK Size", "Print Size Code (UK)", "Size UK"],
+    "sku": ["EAN", "SKU"],
+    # "description" MUST resolve to the LONG/full description (used to build
+    # Template Attribute 2/3), never the short one -- "short description" is
+    # explicitly excluded even if it contains the word "description".
+    "description": ["LongDescription", "Long Description (English)", "Long Description", "Description"],
+    "product_type": ["ProductDivision", "Product Division", "Product Type"],
+}
+
+
+def guess_master_column(options, field_key, fallback_header):
+    """
+    Tries every known naming-convention candidate for `field_key` (see
+    MASTER_COLS_CANDIDATES) against `options`: exact match first (checked
+    across ALL candidates before falling back to substring matching), then
+    a substring keyword match using each candidate as a keyword. A column
+    containing "short" is explicitly excluded when matching "description",
+    so "Short Description (English)" is never mistaken for the long/full
+    description. Falls back to `fallback_header` (single exact-match
+    attempt) if no candidate list exists for this field. Returns None if
+    nothing matches -- never guesses a wrong column.
+    """
+    candidates = MASTER_COLS_CANDIDATES.get(field_key, [fallback_header])
+    norm_options = [str(o).strip().lower() for o in options]
+
+    is_description_field = field_key == "description"
+
+    # Pass 1: exact match against any candidate.
+    for cand in candidates:
+        cand_norm = cand.strip().lower()
+        if cand_norm in norm_options:
+            idx = norm_options.index(cand_norm)
+            if is_description_field and "short" in norm_options[idx]:
+                continue
+            return options[idx]
+
+    # Pass 2: substring keyword match against any candidate.
+    for cand in candidates:
+        cand_norm = cand.strip().lower()
+        for i, opt in enumerate(norm_options):
+            if is_description_field and "short" in opt:
+                continue
+            if cand_norm in opt:
+                return options[i]
+
+    return None
+
+
 def guess_composite_key_column(options):
     """
     Strict guess for the 6-field composite key column (Age Group+Gender+
@@ -1307,13 +1371,11 @@ if master_file is not None:
         mcol1, mcol2 = st.columns(2)
         for i, (field_key, field_label, required) in enumerate(required_fields):
             default_header = MASTER_COLS[field_key]
-            # Exact match first; if your sheet's header varies slightly
-            # (extra period, different casing, etc.), fall back to a
-            # keyword-based guess instead of defaulting to "not in my sheet".
-            base_keyword = field_label.split(" (")[0].strip().lower()
-            auto_guess = guess_column_or_none(
-                master_cols_available, default_header, keywords=[base_keyword]
-            )
+            # Tries every known naming-convention variant for this field
+            # (compact "StyleNo" AND verbose "Style Number", etc.) so
+            # auto-detection works regardless of which Master Sheet
+            # convention is uploaded -- see MASTER_COLS_CANDIDATES.
+            auto_guess = guess_master_column(master_cols_available, field_key, default_header)
             default_idx = (
                 options_with_none.index(auto_guess) if auto_guess and auto_guess in options_with_none else 0
             )
@@ -1323,7 +1385,7 @@ if master_file is not None:
                     f"{field_label} *",
                     options=options_with_none,
                     index=default_idx,
-                    key=f"master_col_map_{field_key}_v3",
+                    key=f"master_col_map_{field_key}_v4",
                 )
                 master_col_map[field_key] = "" if chosen == none_option else chosen
 
@@ -1351,7 +1413,7 @@ if master_file is not None:
                         field_label,
                         options=options_with_none,
                         index=default_idx,
-                        key=f"master_col_map_{field_key}_v3",
+                        key=f"master_col_map_{field_key}_v4",
                     )
                     master_col_map[field_key] = "" if chosen == none_option else chosen
 
