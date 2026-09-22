@@ -19,24 +19,24 @@ MASTER_COLS = {
     # Defaults below match your actual Master Sheet's real header names
     # exactly, so the "Map Master Sheet columns" dropdowns auto-select
     # correctly on upload -- no manual clicking needed for the common case.
-    "style_no": "Style No",
-    "color_no": "Color No",
+    "style_no": "StyleNo",
+    "color_no": "ColorNumber",
     "brand": "Brand",
     "gender": "Gender",
-    "title": "Regional Display Name (English)",
-    "color_family": "Color Family",
-    "color_name": "Color Name",
+    "title": "RegionalDisplayName",
+    "color_family": "ColorName",
+    "color_name": "ColorName",
     "search_color_name": "Search Color Name",
     "size": "Size",
-    "uk_size": "Print Size Code (UK)",
+    "uk_size": "SizeUK",
     "sku": "EAN",
     "price": "Price",
-    "description": "Long Description (English)",
+    "description": "LongDescription",
     "care": "Care",
     "care_label": "Care Label",
     "category_hint": "Category",
     "footwear_color": "Footwear Color",
-    "product_type": "Product Division",
+    "product_type": "ProductDivision",
     "age_group": "Age Group",
     "article_group": "Article Group",
     "article_type": "Article Type",
@@ -1323,7 +1323,7 @@ if master_file is not None:
                     f"{field_label} *",
                     options=options_with_none,
                     index=default_idx,
-                    key=f"master_col_map_{field_key}_v2",
+                    key=f"master_col_map_{field_key}_v3",
                 )
                 master_col_map[field_key] = "" if chosen == none_option else chosen
 
@@ -1351,7 +1351,7 @@ if master_file is not None:
                         field_label,
                         options=options_with_none,
                         index=default_idx,
-                        key=f"master_col_map_{field_key}_v2",
+                        key=f"master_col_map_{field_key}_v3",
                     )
                     master_col_map[field_key] = "" if chosen == none_option else chosen
 
