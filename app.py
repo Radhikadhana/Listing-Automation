@@ -16,24 +16,27 @@ import streamlit as st
 # ======================================================================================
 
 MASTER_COLS = {
-    "style_no": "Style Number",
-    "color_no": "Color Number",
+    # Defaults below match your actual Master Sheet's real header names
+    # exactly, so the "Map Master Sheet columns" dropdowns auto-select
+    # correctly on upload -- no manual clicking needed for the common case.
+    "style_no": "Style No",
+    "color_no": "Color No",
     "brand": "Brand",
     "gender": "Gender",
-    "title": "Regional Display Name",
+    "title": "Regional Display Name (English)",
     "color_family": "Color Family",
     "color_name": "Color Name",
     "search_color_name": "Search Color Name",
     "size": "Size",
-    "uk_size": "UK Size",
-    "sku": "SKU",
+    "uk_size": "Print Size Code (UK)",
+    "sku": "EAN",
     "price": "Price",
-    "description": "Description",
+    "description": "Long Description (English)",
     "care": "Care",
     "care_label": "Care Label",
     "category_hint": "Category",
     "footwear_color": "Footwear Color",
-    "product_type": "Product Type",
+    "product_type": "Product Division",
     "age_group": "Age Group",
     "article_group": "Article Group",
     "article_type": "Article Type",
@@ -1180,8 +1183,15 @@ if master_file is not None:
         mcol1, mcol2 = st.columns(2)
         for i, (field_key, field_label, required) in enumerate(required_fields):
             default_header = MASTER_COLS[field_key]
+            # Exact match first; if your sheet's header varies slightly
+            # (extra period, different casing, etc.), fall back to a
+            # keyword-based guess instead of defaulting to "not in my sheet".
+            base_keyword = field_label.split(" (")[0].strip().lower()
+            auto_guess = guess_column_or_none(
+                master_cols_available, default_header, keywords=[base_keyword]
+            )
             default_idx = (
-                options_with_none.index(default_header) if default_header in options_with_none else 0
+                options_with_none.index(auto_guess) if auto_guess and auto_guess in options_with_none else 0
             )
             target_col = mcol1 if i % 2 == 0 else mcol2
             with target_col:
