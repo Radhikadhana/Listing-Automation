@@ -1025,6 +1025,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Image URL": parent_images,
             "Product Specification 1": f"sku.color_family={first_child_color_name}",
             "Product Specification 2": f"sku.size={first_child_formatted_size}",
+            # Fixed literal value, Parent row only.
+            "Product Specification 3": 'normal.delivery_option_economy=["No",]',
             # Parent-only mapping fields -- Category ID / Size Chart Image
             # URL / Template Attribute 1 are set ONLY on the Parent row.
             "Category ID": category_id,
@@ -1199,7 +1201,7 @@ if master_file is not None:
                     f"{field_label} *",
                     options=options_with_none,
                     index=default_idx,
-                    key=f"master_col_map_{field_key}",
+                    key=f"master_col_map_{field_key}_v2",
                 )
                 master_col_map[field_key] = "" if chosen == none_option else chosen
 
@@ -1227,7 +1229,7 @@ if master_file is not None:
                         field_label,
                         options=options_with_none,
                         index=default_idx,
-                        key=f"master_col_map_{field_key}",
+                        key=f"master_col_map_{field_key}_v2",
                     )
                     master_col_map[field_key] = "" if chosen == none_option else chosen
 
