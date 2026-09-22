@@ -1059,9 +1059,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             "Model": model_value,
             "Warranty Type": "No Warranty",
             "Package Weight (kg)": 0.5,
+            "Weight (Kg)": 0.5,
             "Package Height(cm)": 15,
             "Package Length(cm)": 12,
             "Package Width(cm)": 12,
+            # Shopee-only: fixed shipping service value, applied identically
+            # to every row (Parent and Child alike) since it's in base_row.
+            "Shipping Service": "Doorstep Delivery:1.75" if marketplace == "Shopee" else "",
             "What's in the Box": f"1 X {title}",
             "Template Attribute 2": template_attr_2,
             "Template Attribute 3": template_attr_3,
