@@ -525,6 +525,20 @@ def size_sort_key(size_val, is_footwear_row=False):
         return (2, 0, 0, s)
 
 
+def _normalize_id_for_match(val):
+    """
+    Normalizes a Category ID (or any numeric-looking key) for comparison.
+    Excel/pandas often reads whole-number IDs as floats when the column has
+    any blank cells (e.g. 1811 -> 1811.0), which would otherwise silently
+    fail a plain string comparison against a sheet storing it as a plain
+    int/string "1811". Strips a trailing ".0" so both forms match.
+    """
+    s = str(val).strip().lower()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
 def match_lazada_item_specs(category_id, lazada_spec_df, cat_id_col, value_columns):
     """
     Looks up the resolved Category ID in the Lazada Item Spec Sheet and
@@ -539,8 +553,8 @@ def match_lazada_item_specs(category_id, lazada_spec_df, cat_id_col, value_colum
     if not category_id or cat_id_col not in lazada_spec_df.columns:
         return {}
 
-    norm_target = str(category_id).strip().lower()
-    id_col_norm = lazada_spec_df[cat_id_col].astype(str).str.strip().str.lower()
+    norm_target = _normalize_id_for_match(category_id)
+    id_col_norm = lazada_spec_df[cat_id_col].apply(_normalize_id_for_match)
     match = lazada_spec_df[id_col_norm == norm_target]
     if match.empty:
         return {}
@@ -555,7 +569,27 @@ def match_lazada_item_specs(category_id, lazada_spec_df, cat_id_col, value_colum
     return result
 
 
-def match_category_id_by_attributes(attribute_values, category_df, name_col, id_col):
+def precompute_category_names(category_df, name_col, id_col):
+    """
+    Precomputes (id, normalized_name, name_length) once per Category Sheet
+    row -- called ONCE before the main per-group loop, instead of
+    re-normalizing every row's Category Name text on every single product
+    group (which was the main performance bottleneck for large Master
+    Sheets: O(groups x rows) redundant regex work reduced to O(rows)).
+    """
+    if category_df is None or category_df.empty:
+        return []
+    if name_col not in category_df.columns or id_col not in category_df.columns:
+        return []
+    result = []
+    for _, row in category_df.iterrows():
+        name_norm = normalize_match_text(row.get(name_col, ""))
+        if name_norm:
+            result.append((row.get(id_col, ""), name_norm, len(name_norm)))
+    return result
+
+
+def match_category_id_by_attributes(attribute_values, category_df, name_col, id_col, precomputed_names=None):
     """
     Best-possible-match strategy for a Category Sheet that only has a
     breadcrumb-style Category Name column (e.g. "Kids' Fashion:Baby
@@ -569,11 +603,15 @@ def match_category_id_by_attributes(attribute_values, category_df, name_col, id_
     This is the "combination of all available attributes" match required
     by spec point 1, adapted to a sheet with no explicit key column.
 
+    Pass `precomputed_names` (from precompute_category_names(), computed
+    ONCE outside the per-group loop) to skip re-normalizing the sheet's
+    text on every call -- falls back to computing it fresh if omitted.
+
     Returns "" if nothing scores above zero -- never guesses blindly.
     """
-    if category_df is None or category_df.empty:
-        return ""
-    if name_col not in category_df.columns or id_col not in category_df.columns:
+    if precomputed_names is None:
+        precomputed_names = precompute_category_names(category_df, name_col, id_col)
+    if not precomputed_names:
         return ""
 
     clean_attrs = [normalize_match_text(a) for a in attribute_values if _clean_field_value(a)]
@@ -584,15 +622,12 @@ def match_category_id_by_attributes(attribute_values, category_df, name_col, id_
     best_id = ""
     best_score = 0
     best_specificity = 0  # tie-break: prefer the longer/more specific name text matched
-    for _, row in category_df.iterrows():
-        name_norm = normalize_match_text(row.get(name_col, ""))
-        if not name_norm:
-            continue
+    for id_val, name_norm, name_len in precomputed_names:
         score = sum(1 for a in clean_attrs if a in name_norm)
-        if score > best_score or (score == best_score and score > 0 and len(name_norm) > best_specificity):
+        if score > best_score or (score == best_score and score > 0 and name_len > best_specificity):
             best_score = score
-            best_specificity = len(name_norm)
-            best_id = row.get(id_col, "")
+            best_specificity = name_len
+            best_id = id_val
 
     return best_id if best_score > 0 else ""
 
@@ -618,7 +653,8 @@ def build_category_key(age_group, gender, article_group, article_type, activity_
 
 def match_category_id(title, category_df, keyword_col, id_col,
                        composite_key=None, composite_key_col=None,
-                       attribute_values=None, name_col=None):
+                       attribute_values=None, name_col=None,
+                       precomputed_names=None, precomputed_composite_norm=None):
     """
     Resolves Category ID. Strategies, tried in order:
       1. COMPOSITE KEY exact match (if your Category Sheet has a dedicated
@@ -631,6 +667,12 @@ def match_category_id(title, category_df, keyword_col, id_col,
       3. TITLE keyword match (last-resort fallback).
     Returns "" (leaving the cell blank) if nothing matches -- existing
     values are never overwritten with a bad guess.
+
+    Pass `precomputed_names` and `precomputed_composite_norm` (both
+    computed ONCE outside the per-group loop) to avoid redundant
+    normalization work on every single call -- this is what makes
+    generation fast for large Master Sheets. Falls back to computing fresh
+    each call if omitted (slower, but still correct).
     """
     if category_df is None or category_df.empty:
         return ""
@@ -639,7 +681,10 @@ def match_category_id(title, category_df, keyword_col, id_col,
             and composite_key_col in category_df.columns
             and id_col in category_df.columns):
         norm_key = str(composite_key).strip().lower()
-        sheet_keys_norm = category_df[composite_key_col].astype(str).apply(normalize_match_text)
+        sheet_keys_norm = (
+            precomputed_composite_norm if precomputed_composite_norm is not None
+            else category_df[composite_key_col].astype(str).apply(normalize_match_text)
+        )
         key_match = category_df[sheet_keys_norm == norm_key]
         if not key_match.empty:
             val = key_match.iloc[0].get(id_col, "")
@@ -647,7 +692,9 @@ def match_category_id(title, category_df, keyword_col, id_col,
                 return val
 
     if attribute_values and name_col:
-        attr_result = match_category_id_by_attributes(attribute_values, category_df, name_col, id_col)
+        attr_result = match_category_id_by_attributes(
+            attribute_values, category_df, name_col, id_col, precomputed_names=precomputed_names
+        )
         if attr_result:
             return attr_result
 
@@ -687,10 +734,30 @@ def build_gender_article_group_key(gender, article_group):
     return f"{gender_norm}_{article_norm}"
 
 
+def precompute_gender_article_lookup(df, key_col):
+    """
+    Precomputes {expanded_candidate_key: row} ONCE for a sheet, instead of
+    re-scanning every row (with expand_gender_article_candidates() re-run
+    each time) on every single product group -- this was the main
+    performance bottleneck for large Master Sheets. First-match-wins on
+    duplicate candidates, matching the previous row-by-row-in-order
+    behavior. Returns {} if the sheet/column isn't available.
+    """
+    lookup = {}
+    if df is None or df.empty or key_col not in df.columns:
+        return lookup
+    for _, row in df.iterrows():
+        for candidate in expand_gender_article_candidates(row.get(key_col, "")):
+            if candidate not in lookup:
+                lookup[candidate] = row
+    return lookup
+
+
 def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
                             style_number=None, style_col=None,
                             composite_key=None, composite_key_col=None,
-                            gender_article_key=None, gender_article_key_col=None):
+                            gender_article_key=None, gender_article_key_col=None,
+                            precomputed_ga_lookup=None, precomputed_composite_norm=None):
     """
     Resolves the Size Chart Image URL. Strategies, tried in order:
       1. GENDER + ARTICLE GROUP exact match (PRIMARY): your actual sheet's
@@ -703,30 +770,33 @@ def match_size_chart_image(title, size_chart_image_df, title_col, url_col,
     All comparisons are normalized (case-insensitive, whitespace-collapsed).
     Returns "" (leaving the cell blank) if nothing matches at all --
     existing values are never overwritten with a bad guess.
+
+    Pass `precomputed_ga_lookup` (from precompute_gender_article_lookup(),
+    computed ONCE outside the per-group loop) and `precomputed_composite_norm`
+    for O(1) lookups instead of re-scanning the whole sheet on every call.
     """
     if size_chart_image_df is None or size_chart_image_df.empty:
         return ""
 
-    if (gender_article_key_col and gender_article_key not in (None, "")
-            and gender_article_key_col in size_chart_image_df.columns
-            and url_col in size_chart_image_df.columns):
-        # Row-wise match with multi-gender expansion + typo correction, so a
-        # sheet cell like "Male/Unisex_Footwear" or "Feamle_Cap" (typo) still
-        # matches a plain single-gender Master Sheet row. gender_article_key
-        # is already built via build_gender_article_group_key() (normalized +
-        # typo-corrected), so no further normalization needed on that side.
-        for _, row in size_chart_image_df.iterrows():
-            candidates = expand_gender_article_candidates(row.get(gender_article_key_col, ""))
-            if gender_article_key in candidates:
-                val = row.get(url_col, "")
-                if val and str(val).strip():
-                    return val
+    if gender_article_key not in (None, ""):
+        lookup = (
+            precomputed_ga_lookup if precomputed_ga_lookup is not None
+            else precompute_gender_article_lookup(size_chart_image_df, gender_article_key_col)
+        )
+        row = lookup.get(gender_article_key)
+        if row is not None:
+            val = row.get(url_col, "")
+            if val and str(val).strip():
+                return val
 
     if (composite_key_col and composite_key not in (None, "")
             and composite_key_col in size_chart_image_df.columns
             and url_col in size_chart_image_df.columns):
         norm_key = normalize_match_text(composite_key)
-        sheet_keys_norm = size_chart_image_df[composite_key_col].astype(str).apply(normalize_match_text)
+        sheet_keys_norm = (
+            precomputed_composite_norm if precomputed_composite_norm is not None
+            else size_chart_image_df[composite_key_col].astype(str).apply(normalize_match_text)
+        )
         key_match = size_chart_image_df[sheet_keys_norm == norm_key]
         if not key_match.empty:
             val = key_match.iloc[0].get(url_col, "")
@@ -779,7 +849,8 @@ def build_size_chart_key(gender, article_group):
     return "_".join(normalize_match_text(p) for p in parts)
 
 
-def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col):
+def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, attr_col,
+                               precomputed_ga_lookup=None, precomputed_key_norm=None):
     """
     Matches the selected key column against the Size Chart Template Sheet.
     Two strategies, tried in order:
@@ -793,6 +864,10 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     sheet's value already includes that prefix, it is NOT duplicated.
     Returns "" (leaving the cell blank) if nothing matches -- never
     overwrites with a guess.
+
+    Pass `precomputed_ga_lookup` (from precompute_gender_article_lookup(),
+    computed ONCE outside the per-group loop) for an O(1) lookup instead of
+    re-scanning the whole sheet on every call.
     """
     if size_chart_template_df is None or size_chart_template_df.empty:
         return ""
@@ -802,16 +877,19 @@ def match_size_chart_template(size_chart_key, size_chart_template_df, key_col, a
     matched_row = None
 
     # Strategy 1: Gender_ArticleGroup-style expansion.
-    for _, row in size_chart_template_df.iterrows():
-        candidates = expand_gender_article_candidates(row.get(key_col, ""))
-        if size_chart_key in candidates:
-            matched_row = row
-            break
+    lookup = (
+        precomputed_ga_lookup if precomputed_ga_lookup is not None
+        else precompute_gender_article_lookup(size_chart_template_df, key_col)
+    )
+    matched_row = lookup.get(size_chart_key)
 
     # Strategy 2: plain normalized equality (composite key format).
     if matched_row is None:
         norm_key = normalize_match_text(size_chart_key)
-        sheet_keys_norm = size_chart_template_df[key_col].astype(str).apply(normalize_match_text)
+        sheet_keys_norm = (
+            precomputed_key_norm if precomputed_key_norm is not None
+            else size_chart_template_df[key_col].astype(str).apply(normalize_match_text)
+        )
         eq_match = size_chart_template_df[sheet_keys_norm == norm_key]
         if not eq_match.empty:
             matched_row = eq_match.iloc[0]
@@ -837,7 +915,36 @@ def match_size_chart_by_title(title, size_chart_image_df, title_col, url_col):
     return match_size_chart_image(title, size_chart_image_df, title_col, url_col)
 
 
-def get_images_for_key(lookup_value, image_df, lookup_col, url_col):
+def precompute_image_lookup(image_df, lookup_col, url_col):
+    """
+    Precomputes {normalized_key: [urls]} ONCE for the Image Sheet, instead
+    of re-filtering the whole sheet on every single product group (the
+    Image Sheet is long/tall format -- many rows per key -- so this was a
+    real cost at scale). Groups by the normalized key in one vectorized
+    pass rather than a per-call boolean-mask scan.
+    """
+    lookup = {}
+    if image_df is None or image_df.empty:
+        return lookup
+    if lookup_col not in image_df.columns or url_col not in image_df.columns:
+        return lookup
+    keys_norm = image_df[lookup_col].astype(str).str.strip()
+    for key, group in image_df.groupby(keys_norm):
+        imgs = []
+        seen = set()
+        for val in group[url_col]:
+            if pd.notna(val) and str(val).strip():
+                url = str(val).strip()
+                if url not in seen:
+                    seen.add(url)
+                    imgs.append(url)
+        lookup[key] = imgs
+    return lookup
+
+
+def get_images_for_key(lookup_value, image_df, lookup_col, url_col, precomputed_lookup=None):
+    if precomputed_lookup is not None:
+        return precomputed_lookup.get(str(lookup_value).strip(), [])
     if image_df is None or image_df.empty:
         return []
     if lookup_col not in image_df.columns or url_col not in image_df.columns:
@@ -918,26 +1025,40 @@ def first_nonblank(*values):
     return ""
 
 
+_MATERIAL_COMPOSITION_PATTERN = re.compile(
+    r"^(Main Material\s*\d*\s*:\s*)?"                          # optional "Main Material N:" prefix
+    r"(\d+%\s*[A-Za-z]+(?:\s+[A-Za-z]+)*"                       # first "NN% word(s)" unit
+    r"(?:,\s*\d+%\s*[A-Za-z]+(?:\s+[A-Za-z]+)*)*)"              # repeated ", NN% word(s)" units
+)
+
+
 def clean_material_for_short_description(raw_material):
     """
-    Keeps only the actual material composition (e.g. "Main Material 1: 95%
-    polyester, 5% elastane") and drops trailing technical spec fields that
-    are sometimes appended directly onto the value with no separating
-    space -- fabric construction, treatment, weight, internal codes, print
-    method, etc. (e.g. "-jersey-wicking: chemical-156.00 g/m²-PS/01-CF/002-
-    print: sublimation"). Those extra fields are recognized by the pattern
-    "-<label>:" (a hyphen immediately followed by a word/phrase and a
-    colon) appearing right after the composition list; everything from
-    that point onward is truncated. If no such pattern is found, the
-    material value is returned unchanged (nothing to strip).
+    Keeps ONLY the actual material composition list (e.g. "Main Material 1:
+    95% polyester, 5% elastane") and drops any trailing technical spec
+    content appended after it -- fabric construction, treatment, weight,
+    codes, print method, etc. This junk shows up in more than one format in
+    real data, e.g.:
+      "...5% elastane-jersey-wicking: chemical-156.00 g/m²-PS/01-CF/002-print: sublimation"
+      "...100% polyester - circular knit - 155.00 g/m² - piece dyed"
+    Rather than pattern-matching the junk itself (which varies), this
+    matches the composition list FORWARD from the start -- a "Main
+    Material N:" prefix (optional) followed by one or more "NN% word(s)"
+    units joined strictly by ", " -- and truncates at the first point that
+    pattern stops holding, regardless of what the trailing junk looks like.
+    If the value has no "NN%" composition pattern at all (e.g. a plain
+    material name like "Genuine Leather" with nothing extra attached), it
+    is returned unchanged.
     """
     val = _clean_field_value(raw_material)
     if not val:
         return val
-    match = re.search(r"-[A-Za-z][A-Za-z\-]*(?:\s+[A-Za-z\-]+)*:", val)
-    if match:
-        val = val[: match.start()].strip()
-    return val
+    match = _MATERIAL_COMPOSITION_PATTERN.match(val)
+    if not match or not match.group(2):
+        return val
+    prefix = match.group(1) or ""
+    composition = match.group(2)
+    return (prefix + composition).strip()
 
 
 def build_short_description(brand, color_name, gender, activity_group, collection,
@@ -1042,6 +1163,25 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
 
     currency_code = REGION_CURRENCY.get(region, "PHP")
 
+    # --- Precompute all lookup structures ONCE, before the per-group loop,
+    # instead of re-scanning full sheets for every single product group.
+    # This is what makes generation fast for large Master Sheets -- these
+    # were previously the main performance bottleneck. ---
+    precomputed_category_names = precompute_category_names(category_df, cc["category_name"], cc["category_id"])
+    precomputed_category_composite_norm = (
+        category_df[cc["composite_key"]].astype(str).apply(normalize_match_text)
+        if (cc["composite_key"] and category_df is not None and cc["composite_key"] in category_df.columns)
+        else None
+    )
+    precomputed_sct_ga_lookup = precompute_gender_article_lookup(size_chart_template_df, sct["key"])
+    precomputed_sci_ga_lookup = precompute_gender_article_lookup(size_chart_image_df, sci["gender_article_key"])
+    precomputed_sci_composite_norm = (
+        size_chart_image_df[sci["composite_key"]].astype(str).apply(normalize_match_text)
+        if (sci["composite_key"] and size_chart_image_df is not None and sci["composite_key"] in size_chart_image_df.columns)
+        else None
+    )
+    precomputed_image_lookup = precompute_image_lookup(image_df, ic["sku"], ic["url_col"])
+
     rows = []
     master_df = master_df.copy()
 
@@ -1105,6 +1245,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             title, category_df, cc["keyword"], cc["category_id"],
             composite_key=shared_composite_key, composite_key_col=cc["composite_key"],
             attribute_values=shared_key_attrs, name_col=cc["category_name"],
+            precomputed_names=precomputed_category_names,
+            precomputed_composite_norm=precomputed_category_composite_norm,
         )
         mapping_log["category"].append({
             "SKU/Model": model_value, "Key": shared_composite_key, "Matched": bool(category_id),
@@ -1130,11 +1272,13 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         else:
             gender_article_key = build_gender_article_group_key(gender_val, first.get(mc["article_group"], ""))
             template_attr_1 = match_size_chart_template(
-                gender_article_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+                gender_article_key, size_chart_template_df, sct["key"], sct["template_attribute_1"],
+                precomputed_ga_lookup=precomputed_sct_ga_lookup,
             )
             if not template_attr_1:
                 template_attr_1 = match_size_chart_template(
-                    shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"]
+                    shared_composite_key, size_chart_template_df, sct["key"], sct["template_attribute_1"],
+                    precomputed_ga_lookup=precomputed_sct_ga_lookup,
                 )
             mapping_log["size_chart_template"].append({
                 "SKU/Model": model_value, "Key": gender_article_key, "Matched": bool(template_attr_1),
@@ -1149,6 +1293,8 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             style_number=style_number, style_col=sci["style_no"],
             composite_key=shared_composite_key, composite_key_col=sci["composite_key"],
             gender_article_key=gender_article_key_for_image, gender_article_key_col=sci["gender_article_key"],
+            precomputed_ga_lookup=precomputed_sci_ga_lookup,
+            precomputed_composite_norm=precomputed_sci_composite_norm,
         )
         mapping_log["size_chart_image"].append({
             "SKU/Model": model_value, "Key": gender_article_key_for_image, "Matched": bool(size_chart_image_url),
@@ -1266,7 +1412,7 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
             parent_variation_1_label = "color_family"
             parent_variation_2_label = "size"
 
-        parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
+        parent_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"], precomputed_lookup=precomputed_image_lookup))
         parent_row = {
             "Row Type": "Parent",
             **base_row,
@@ -1295,12 +1441,16 @@ def build_upload_sheet(master_df, image_df, size_chart_template_df, category_df,
         }
         rows.append(parent_row)
 
+        # Reuse parent_images for every child in this group instead of
+        # re-running the same lookup once per child -- model_value (the
+        # image lookup key) is identical for every child within a group.
+        child_images = parent_images
+
         for rec in child_records:
             sku = rec.get(mc["sku"], "")
             color_name = clean_color_name(rec.get(mc["color_name"], ""))
             uk_size_raw = rec.get(mc["uk_size"], "")
             formatted_size = format_size_value(uk_size_raw, footwear)
-            child_images = "; ".join(get_images_for_key(model_value, image_df, ic["sku"], ic["url_col"]))
 
             if marketplace == "Shopee":
                 child_spec_1 = "Brand=PUMA"
